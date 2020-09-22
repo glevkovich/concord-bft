@@ -29,4 +29,6 @@ path-exclude /usr/share/linda/*' > /etc/dpkg/dpkg.cfg.d/01_nodoc && \
         apt-get purge --auto-remove -y git \
             python3-pip \
             python3-setuptools \
-            wget
+            wget \
+            checkinstall \
+            zlib1g-dev
