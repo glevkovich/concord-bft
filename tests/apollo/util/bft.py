@@ -200,7 +200,7 @@ class BftTestNetwork:
         if client_factory:
             self.client_factory = client_factory
         else:
-            self.client_factory = self._create_new_udp_client
+            self.client_factory = self._create_new_tcp_tls_client
         self.open_fds = {}
         self.current_test = ""
 
@@ -236,6 +236,7 @@ class BftTestNetwork:
 
         os.chdir(bft_network.testdir)
         bft_network._generate_crypto_keys()
+        bft_network._generate_tls_certs()
 
         bft_network._init_metrics()
         bft_network._create_clients()
@@ -284,10 +285,10 @@ class BftTestNetwork:
                     for i in range(0, config.n + config.num_ro_replicas)]
 
         self._generate_crypto_keys()
+        self._generate_tls_certs()
 
         self._init_metrics()
         self._create_clients()
-
 
     def _generate_crypto_keys(self):
         keygen = os.path.join(self.toolsdir, "GenerateConcordKeys")
@@ -295,6 +296,19 @@ class BftTestNetwork:
         if self.config.num_ro_replicas > 0:
             args.extend(["-r", str(self.config.num_ro_replicas)])
         args.extend(["-o", self.config.key_file_prefix])
+        subprocess.run(args, check=True)
+
+    def _generate_tls_certs(self):
+        """
+        Generate certificates and private keys for every node ID.
+        Since every node might be a potential client and/or server, each folder consist the subfolders
+        'client' and 'server'. Each subfolder holds an X.509 certificate client.cert or server.cert and the
+        matching private key pk.pem file (PEM format). All are generated using bash script create_tls_certs.sh.
+        The output is generated into the test folder to a folder called 'certs' (which is overwritten if exist).
+        """
+        certs_gen_script_path = os.path.join(self.builddir, "tests/simpleTest/scripts/create_tls_certs.sh")
+        certs_gen_script_output_path = os.path.join(self.testdir, "certs")
+        args = [certs_gen_script_path, str(self.config.n), certs_gen_script_output_path]
         subprocess.run(args, check=True)
 
     def _create_clients(self):
@@ -305,6 +319,10 @@ class BftTestNetwork:
     def _create_new_udp_client(self, client_id):
         config = self._bft_config(client_id)
         return bft_client.UdpClient(config, self.replicas)
+
+    def _create_new_tcp_tls_client(self, client_id):
+        config = self._bft_config(client_id)
+        return bft_client.TcpTlsClient(config, self.replicas)
 
     async def new_client(self):
         client_id = max(self.clients.keys() | self.reserved_clients.keys()) + 1
