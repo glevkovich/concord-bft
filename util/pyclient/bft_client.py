@@ -18,10 +18,10 @@ import time
 import bft_msgs
 import replica_specific_info as rsi
 from bft_config import Config, Replica
+from abc import ABC, abstractmethod
 
 # All test communication expects ports to start from 3710
 BASE_PORT = 3710
-
 
 class ReqSeqNum:
     def __init__(self):
@@ -54,11 +54,11 @@ class ReqSeqNum:
         r = r | self.count
         return r
 
-
 class MofNQuorum:
     def __init__(self, replicas, required):
         self.replicas = replicas
         self.required = required
+
     @classmethod
     def LinearizableQuorum(cls, config, replicas):
         f = config.f
@@ -74,31 +74,38 @@ class MofNQuorum:
     def All(cls, config, replicas):
         return MofNQuorum(replicas, len(replicas))
 
-
-class UdpClient:
-    def __enter__(self):
-        """context manager method for 'with' statements"""
-        return self
-
-    def __exit__(self, *args):
-        """context manager method for 'with' statements"""
-        self.sock.close()
-
+class BftClient(ABC):
     def __init__(self, config, replicas):
         self.config = config
         self.replicas = replicas
-        self.sock = trio.socket.socket(trio.socket.AF_INET,
-                                       trio.socket.SOCK_DGRAM)
         self.req_seq_num = ReqSeqNum()
         self.client_id = config.id
         self.primary = None
         self.reply = None
         self.retries = 0
         self.msgs_sent = 0
-        self.port = BASE_PORT + 2 * self.client_id
-        self.sock_bound = False
         self.replies_manager = rsi.RepliesManager()
         self.rsi_replies = dict()
+
+    @abstractmethod
+    async def send_data(self, data, dest_ip, dest_port):
+        pass
+
+    @abstractmethod
+    async def receive_data(self, max_size):
+        pass
+
+    @abstractmethod
+    async def bind(self, socket, port):
+        pass
+
+    @abstractmethod
+    def __enter__(self):
+        pass
+
+    @abstractmethod
+    def __exit__(self, *args):
+        pass
 
     async def write(self, msg, seq_num=None, cid=None, pre_process=False, m_of_n_quorum=None):
         """ A wrapper around sendSync for requests that mutate state """
@@ -131,7 +138,7 @@ class UdpClient:
          not already bound.
         """
         if not self.sock_bound:
-            await self.bind()
+            await self.bind(self.sock, self.port)
 
         if seq_num is None:
             seq_num = self.req_seq_num.next()
@@ -171,11 +178,6 @@ class UdpClient:
         self.rsi_replies = dict()
         self.replies_manager.clear_replies()
 
-    async def bind(self):
-        # Each port is a function of its client_id
-        await self.sock.bind(("127.0.0.1", self.port))
-        self.sock_bound = True
-
     async def send_loop(self, data, read_only, m_of_n_quorum):
         """
         Send and wait for a quorum of replies. Keep retrying if a quorum
@@ -199,19 +201,17 @@ class UdpClient:
     async def send_to_primary(self, request):
         """Send a serialized request to the primary"""
         async with trio.open_nursery() as nursery:
-            nursery.start_soon(self.sendto, request, (self.primary.ip,
-                                                      self.primary.port))
+            nursery.start_soon(self.sendto, request, self.primary.ip, self.primary.port)
 
     async def send_to_replicas(self, request, replicas):
         """Send a serialized request to all replicas"""
         async with trio.open_nursery() as nursery:
             for replica in replicas:
-                nursery.start_soon(self.sendto, request, (replica.ip,
-                                                          replica.port))
+                nursery.start_soon(self.sendto, request, replica.ip, replica.port)
 
-    async def sendto(self, request, ip_port):
-        """Send a request over a udp socket"""
-        await self.sock.sendto(request, ip_port)
+    async def sendto(self, request, dest_ip, dest_port):
+        """Send a request"""
+        await self.send_data(request, dest_ip, dest_port)
         self.msgs_sent += 1
 
     async def recv(self, required_replies, dest_replicas, cancel_scope):
@@ -221,7 +221,7 @@ class UdpClient:
         """
         replicas_ids = [(r.ip, r.port) for r in dest_replicas]
         while True:
-            data, sender = await self.sock.recvfrom(self.config.max_msg_size)
+            data, sender = await self.receive_data(self.config.max_msg_size)
             rsi_msg = rsi.MsgWithReplicaSpecificInfo(data, sender)
             header, reply = rsi_msg.get_common_reply()
             if self.valid_reply(header, rsi_msg.get_sender_id(), replicas_ids):
@@ -241,3 +241,50 @@ class UdpClient:
         This method should be called after the send has done and before initiating a new request
         """
         return self.rsi_replies
+
+class UdpClient(BftClient):
+    def __init__(self, config, replicas):
+        super().__init__(config, replicas)
+        self.sock = trio.socket.socket(trio.socket.AF_INET, trio.socket.SOCK_DGRAM)
+        self.port = BASE_PORT + 2 * self.client_id
+        self.sock_bound = False
+
+    async def bind(self, socket, port):
+        # Each port is a function of its client_id
+        await socket.bind(('localhost', self.port))
+        self.sock_bound = True
+
+    async def send_data(self, data, dest_ip, dest_port):
+        await self.sock.sendto(data, (dest_ip, dest_port))
+
+    async def receive_data(self, max_size):
+        return await self.sock.recvfrom(max_size)
+
+    def __enter__(self):
+        """context manager method for 'with' statements"""
+        return self
+
+    def __exit__(self, *args):
+        """context manager method for 'with' statements"""
+        self.sock.close()
+
+class TcpTlsClient(BftClient):
+    def __init__(self, config, replicas, cert, private_key):
+        super().__init__(config, replicas)
+        self.cert = cert
+        self.private_key = private_key
+
+    async def bind(self, socket, port):
+        pass
+
+    async def send_data(self, data, dest_ip, dest_port):
+        pass
+
+    async def receive_data(self, max_size):
+        pass
+
+    def __enter__(self):
+        pass
+
+    def __exit__(self, *args):
+        pass
