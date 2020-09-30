@@ -14,6 +14,8 @@
 import struct
 import trio
 import time
+import ssl
+import os
 
 import bft_msgs
 import replica_specific_info as rsi
@@ -88,15 +90,15 @@ class BftClient(ABC):
         self.rsi_replies = dict()
 
     @abstractmethod
-    async def send_data(self, data, dest_ip, dest_port):
+    async def send_data(self, data, replica):
         pass
 
     @abstractmethod
-    async def receive_data(self, max_size):
+    async def receive_data(self, replicas_addr, max_size):
         pass
 
     @abstractmethod
-    async def bind(self, socket, port):
+    async def bind(self):
         pass
 
     @abstractmethod
@@ -137,8 +139,7 @@ class BftClient(ABC):
          Note that this method also binds the socket to an appropriate port if
          not already bound.
         """
-        if not self.sock_bound:
-            await self.bind(self.sock, self.port)
+        await self.bind() 
 
         if seq_num is None:
             seq_num = self.req_seq_num.next()
@@ -153,7 +154,7 @@ class BftClient(ABC):
 
         # Raise a trio.TooSlowError exception if a quorum of replies
         try:
-            with trio.fail_after(self.config.req_timeout_milli / 1000):
+            with trio.fail_after(self.config.req_timeout_milli):
                 self.reset_on_new_request()
                 self.retries = 0
                 return await self.send_loop(data, read_only, m_of_n_quorum)
@@ -201,17 +202,17 @@ class BftClient(ABC):
     async def send_to_primary(self, request):
         """Send a serialized request to the primary"""
         async with trio.open_nursery() as nursery:
-            nursery.start_soon(self.sendto, request, self.primary.ip, self.primary.port)
+            nursery.start_soon(self.sendto, request, self.primary)
 
     async def send_to_replicas(self, request, replicas):
         """Send a serialized request to all replicas"""
         async with trio.open_nursery() as nursery:
             for replica in replicas:
-                nursery.start_soon(self.sendto, request, replica.ip, replica.port)
+                nursery.start_soon(self.sendto, request, replica)
 
-    async def sendto(self, request, dest_ip, dest_port):
+    async def sendto(self, request, replica):
         """Send a request"""
-        await self.send_data(request, dest_ip, dest_port)
+        await self.send_data(request, replica)
         self.msgs_sent += 1
 
     async def recv(self, required_replies, dest_replicas, cancel_scope):
@@ -219,12 +220,12 @@ class BftClient(ABC):
         Receive reply messages until a quorum is achieved or the enclosing
         cancel_scope times out.
         """
-        replicas_ids = [(r.ip, r.port) for r in dest_replicas]
+        replicas_addr = [(r.ip, r.port) for r in dest_replicas]
         while True:
-            data, sender = await self.receive_data(self.config.max_msg_size)
+            data, sender = await self.receive_data(replicas_addr, self.config.max_msg_size)
             rsi_msg = rsi.MsgWithReplicaSpecificInfo(data, sender)
             header, reply = rsi_msg.get_common_reply()
-            if self.valid_reply(header, rsi_msg.get_sender_id(), replicas_ids):
+            if self.valid_reply(header, rsi_msg.get_sender_id(), replicas_addr):
                 quorum_size = self.replies_manager.add_reply(rsi_msg)
                 if quorum_size == required_replies:
                     self.reply = reply
@@ -249,15 +250,16 @@ class UdpClient(BftClient):
         self.port = BASE_PORT + 2 * self.client_id
         self.sock_bound = False
 
-    async def bind(self, socket, port):
-        # Each port is a function of its client_id
-        await socket.bind(('localhost', self.port))
-        self.sock_bound = True
+    async def bind(self):
+        """ Bind the socket to address, where each port is a function of its client_id """
+        if not self.sock_bound:
+            await self.sock.bind(('localhost', self.port))
+            self.sock_bound = True
 
-    async def send_data(self, data, dest_ip, dest_port):
-        await self.sock.sendto(data, (dest_ip, dest_port))
+    async def send_data(self, data, replica):
+        await self.sock.sendto(data, (replica.ip, replica.port))
 
-    async def receive_data(self, max_size):
+    async def receive_data(self, replicas_addr, max_size):
         return await self.sock.recvfrom(max_size)
 
     def __enter__(self):
@@ -269,22 +271,54 @@ class UdpClient(BftClient):
         self.sock.close()
 
 class TcpTlsClient(BftClient):
-    def __init__(self, config, replicas, cert, private_key):
+    def __init__(self, config, replicas):
         super().__init__(config, replicas)
-        self.cert = cert
-        self.private_key = private_key
+        self.addr_to_stream = dict()
 
-    async def bind(self, socket, port):
+    async def bind(self):
         pass
 
-    async def send_data(self, data, dest_ip, dest_port):
-        pass
+    def _get_private_key_path(self, replica_id, is_client=False):
+        cert_type = "client" if is_client else "server"
+        return os.path.join(self.config.certs_path, str(replica_id), cert_type, "pk.pem")
 
-    async def receive_data(self, max_size):
-        pass
+    def _get_cert_path(self, replica_id, is_client=False):
+        cert_type = "client" if is_client else "server"
+        return os.path.join(self.config.certs_path, str(replica_id), cert_type, cert_type + ".cert")
+
+    async def send_data(self, data, dest_replica):
+        addr = (dest_replica.ip, dest_replica.port)
+        if addr not in self.addr_to_stream:
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            server_cert_path = self._get_cert_path(dest_replica.id, False)
+            client_cert_path = self._get_cert_path(self.client_id, True)     # todo - move to init
+            client_pk_path = self._get_private_key_path(self.client_id, True) # todo - move to init
+            ssl_context.load_verify_locations(cafile=server_cert_path)
+            ssl_context.load_cert_chain(client_cert_path, client_pk_path)
+            await trio.sleep(0.1) # to do remove
+            ssl_stream = await trio.open_ssl_over_tcp_stream(str(addr[0]), int(addr[1]), ssl_context=ssl_context,
+                                                             happy_eyeballs_delay=1.0)
+            #await trio.sleep(0.1)
+            #ssl_stream = await trio.open_tcp_stream(str(addr[0]), int(addr[1]), happy_eyeballs_delay=100.0, local_address="127.0.0.1")
+            # import socket
+            # await trio.sleep(0.1)
+            # sock_out = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # sock_out.connect((str(addr[0]), int(addr[1])))
+            # sock_out.send(str.encode("ASD"))
+            await ssl_stream.do_handshake()
+            self.addr_to_stream[addr] = ssl_stream
+        await self.addr_to_stream[addr].sendall(data)
+
+    async def receive_data(self, replicas_addr, max_size):
+        """xxx"""
+        async with trio.open_nursery() as nursery:
+            for addr in replicas_addr:
+                stream = self.addr_to_stream[addr]
+                nursery.start_soon(stream.receive_some(max_size))
 
     def __enter__(self):
         pass
 
     def __exit__(self, *args):
+        ## to do
         pass

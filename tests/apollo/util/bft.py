@@ -22,6 +22,7 @@ import subprocess
 from collections import namedtuple
 import tempfile
 from functools import wraps
+from functools import partial
 import inspect
 
 import trio
@@ -70,7 +71,6 @@ def interesting_configs(selected=None):
             "Invariant breached. Expected: n = 3f + 2c + 1"
 
     return selected_bft_configs
-
 
 def with_trio(async_fn):
     """ Decorator for running a coroutine (async_fn) with trio. """
@@ -200,7 +200,8 @@ class BftTestNetwork:
         if client_factory:
             self.client_factory = client_factory
         else:
-            self.client_factory = self._create_new_tcp_tls_client
+            self.client_factory = partial(self._create_new_client, bft_client.TcpTlsClient)
+            #self.client_factory = partial(self._create_new_client, bft_client.UdpClient)
         self.open_fds = {}
         self.current_test = ""
 
@@ -229,7 +230,7 @@ class BftTestNetwork:
             client_factory = client_factory
         )
 
-        #copy loggging.properties file
+        #copy logging.properties file
         shutil.copy(os.path.abspath("../simpleKVBC/scripts/logging.properties"), testdir)
 
         print("Running test in {}".format(bft_network.testdir))
@@ -307,22 +308,18 @@ class BftTestNetwork:
         The output is generated into the test folder to a folder called 'certs' (which is overwritten if exist).
         """
         certs_gen_script_path = os.path.join(self.builddir, "tests/simpleTest/scripts/create_tls_certs.sh")
-        certs_gen_script_output_path = os.path.join(self.testdir, "certs")
-        args = [certs_gen_script_path, str(self.config.n), certs_gen_script_output_path]
-        subprocess.run(args, check=True)
+        self.certs_path = os.path.join(self.testdir, "certs")
+        args = [certs_gen_script_path, str(self.config.n + self.config.num_clients), self.certs_path]
+        subprocess.run(args, check=True, stdout=subprocess.DEVNULL)
 
     def _create_clients(self):
         for client_id in range(self.config.n + self.config.num_ro_replicas,
                                self.config.num_clients+self.config.n + self.config.num_ro_replicas):
             self.clients[client_id] = self.client_factory(client_id)
 
-    def _create_new_udp_client(self, client_id):
-        config = self._bft_config(client_id)
-        return bft_client.UdpClient(config, self.replicas)
-
-    def _create_new_tcp_tls_client(self, client_id):
-        config = self._bft_config(client_id)
-        return bft_client.TcpTlsClient(config, self.replicas)
+    def _create_new_client(self, client_class, client_id):
+        config = self._bft_config(client_id, self.certs_path)
+        return client_class(config, self.replicas)
 
     async def new_client(self):
         client_id = max(self.clients.keys() | self.reserved_clients.keys()) + 1
@@ -336,13 +333,14 @@ class BftTestNetwork:
         self.reserved_clients[reserved_client_id] = reserved_client
         return reserved_client
 
-    def _bft_config(self, client_id):
+    def _bft_config(self, client_id, certs_path):
         return bft_config.Config(client_id,
                                  self.config.f,
                                  self.config.c,
                                  MAX_MSG_SIZE,
                                  REQ_TIMEOUT_MILLI,
-                                 RETRY_TIMEOUT_MILLI)
+                                 RETRY_TIMEOUT_MILLI,
+                                 certs_path)
 
     def _init_metrics(self):
         metric_clients = {}
@@ -359,15 +357,19 @@ class BftTestNetwork:
     def start_replica_cmd(self, replica_id):
         """
         Returns command line to start replica with the given id
-        If the callback accepts three parameters and one of them
-        is named 'config' - pass the network configuration too.
+        If the callback accepts three parameters and one of them is named 'config' - pass the network configuration too.
+        Append the SSL certificate path. This one is needed only for TLS communication but done in all for cases for
+        simplicity.
         """
         with log.start_action(action_type="start_replica_cmd"):
             start_replica_fn_args = inspect.getfullargspec(self.config.start_replica_cmd).args
             if "config" in start_replica_fn_args and len(start_replica_fn_args) == 3:
-                return self.config.start_replica_cmd(self.builddir, replica_id, self.config)
+                cmd = self.config.start_replica_cmd(self.builddir, replica_id, self.config)
             else:
-                return self.config.start_replica_cmd(self.builddir, replica_id)
+                cmd = self.config.start_replica_cmd(self.builddir, replica_id)
+            cmd.append("-c")
+            cmd.append(self.certs_path)
+            return cmd
 
     def stop_replica_cmd(self, replica_id):
         """
@@ -385,6 +387,7 @@ class BftTestNetwork:
                         raise
 
             assert len(self.procs) == self.config.n
+        
 
     def stop_all_replicas(self):
         """ Stop all running replicas"""

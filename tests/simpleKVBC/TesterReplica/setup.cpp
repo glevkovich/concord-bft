@@ -49,6 +49,7 @@ std::unique_ptr<TestSetup> TestSetup::ParseArgs(int argc, char** argv) {
     std::string keysFilePrefix;
     std::string commConfigFile;
     std::string s3ConfigFile;
+    std::string certRootPath = "certs";
     std::string logPropsFile = "logging.properties";
     // Set StorageType::V1DirectKeyValue as the default storage type.
     auto storageType = StorageType::V1DirectKeyValue;
@@ -63,12 +64,14 @@ std::unique_ptr<TestSetup> TestSetup::ParseArgs(int argc, char** argv) {
                                           {"persistence-mode", no_argument, 0, 'p'},
                                           {"storage-type", required_argument, 0, 't'},
                                           {"log-props-file", required_argument, 0, 'l'},
+                                          {"log-props-file", required_argument, 0, 'l'},
+                                          {"cert-root-path", required_argument, 0, 'c'},
                                           {0, 0, 0, 0}};
 
     int o = 0;
     int optionIndex = 0;
     LOG_INFO(GL, "Command line options:");
-    while ((o = getopt_long(argc, argv, "i:k:n:s:v:a:3:pt:l:", longOptions, &optionIndex)) != -1) {
+    while ((o = getopt_long(argc, argv, "i:k:n:s:v:a:3:pt:l:c:", longOptions, &optionIndex)) != -1) {
       switch (o) {
         case 'i': {
           replicaConfig.replicaId = concord::util::to<std::uint16_t>(std::string(optarg));
@@ -114,6 +117,10 @@ std::unique_ptr<TestSetup> TestSetup::ParseArgs(int argc, char** argv) {
           logPropsFile = optarg;
           break;
         }
+        case 'c': {
+          certRootPath = optarg;
+          break;
+        }
         case '?': {
           throw std::runtime_error("invalid arguments");
         } break;
@@ -136,7 +143,7 @@ std::unique_ptr<TestSetup> TestSetup::ParseArgs(int argc, char** argv) {
         true, replicaConfig.replicaId, replicaConfig.numOfClientProxies, numOfReplicas, commConfigFile);
 #elif USE_COMM_TLS_TCP
     bft::communication::TlsTcpConfig conf = testCommConfig.GetTlsTCPConfig(
-        true, replicaConfig.replicaId, replicaConfig.numOfClientProxies, numOfReplicas, commConfigFile);
+        true, replicaConfig.replicaId, replicaConfig.numOfClientProxies, numOfReplicas, commConfigFile, certRootPath);
 #else
     bft::communication::PlainUdpConfig conf = testCommConfig.GetUDPConfig(
         true, replicaConfig.replicaId, replicaConfig.numOfClientProxies, numOfReplicas, commConfigFile);
@@ -145,7 +152,7 @@ std::unique_ptr<TestSetup> TestSetup::ParseArgs(int argc, char** argv) {
     std::unique_ptr<bft::communication::ICommunication> comm(bft::communication::CommFactory::create(conf));
 
     uint16_t metricsPort = conf.listenPort + 1000;
-
+    LOG_INFO(logger, "\ncertRootPath: " << certRootPath);
     LOG_INFO(logger, "\nReplica Configuration: \n" << replicaConfig);
 
     return std::unique_ptr<TestSetup>(new TestSetup{replicaConfig,
