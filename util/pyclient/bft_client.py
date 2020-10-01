@@ -271,9 +271,13 @@ class UdpClient(BftClient):
         self.sock.close()
 
 class TcpTlsClient(BftClient):
+    # In create_tls_certs.sh - openssl command line utility uses CN(certificate name) in the subj field.
+    # This is the host name (domain name) to be verified.
+    CERT_DOMAIN_FORMAT="node%dser"
+
     def __init__(self, config, replicas):
         super().__init__(config, replicas)
-        self.addr_to_stream = dict()
+        self.ssl_streams = dict()
 
     async def bind(self):
         pass
@@ -286,34 +290,31 @@ class TcpTlsClient(BftClient):
         cert_type = "client" if is_client else "server"
         return os.path.join(self.config.certs_path, str(replica_id), cert_type, cert_type + ".cert")
 
+    async def _establish_ssl_stream(self, dest_replica):
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        server_cert_path = self._get_cert_path(dest_replica.id, False)
+        client_cert_path = self._get_cert_path(self.client_id, True)
+        client_pk_path = self._get_private_key_path(self.client_id, True)
+        ssl_context.load_verify_locations(cafile=server_cert_path)
+        ssl_context.load_cert_chain(client_cert_path, client_pk_path)
+        await trio.sleep(0.1) # todo - ??
+        tcp_stream = await trio.open_tcp_stream(str(dest_replica.ip), int(dest_replica.port),
+                                                happy_eyeballs_delay=100.0, local_address="localhost")
+        server_hostname = self.CERT_DOMAIN_FORMAT % dest_replica.id
+        ssl_stream = trio.SSLStream(tcp_stream, ssl_context, server_hostname=server_hostname, https_compatible=False)
+        await ssl_stream.do_handshake()
+        self.ssl_streams[dest_replica] = ssl_stream
+
     async def send_data(self, data, dest_replica):
-        addr = (dest_replica.ip, dest_replica.port)
-        if addr not in self.addr_to_stream:
-            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            server_cert_path = self._get_cert_path(dest_replica.id, False)
-            client_cert_path = self._get_cert_path(self.client_id, True)     # todo - move to init
-            client_pk_path = self._get_private_key_path(self.client_id, True) # todo - move to init
-            ssl_context.load_verify_locations(cafile=server_cert_path)
-            ssl_context.load_cert_chain(client_cert_path, client_pk_path)
-            await trio.sleep(0.1) # to do remove
-            ssl_stream = await trio.open_ssl_over_tcp_stream(str(addr[0]), int(addr[1]), ssl_context=ssl_context,
-                                                             happy_eyeballs_delay=1.0)
-            #await trio.sleep(0.1)
-            #ssl_stream = await trio.open_tcp_stream(str(addr[0]), int(addr[1]), happy_eyeballs_delay=100.0, local_address="127.0.0.1")
-            # import socket
-            # await trio.sleep(0.1)
-            # sock_out = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # sock_out.connect((str(addr[0]), int(addr[1])))
-            # sock_out.send(str.encode("ASD"))
-            await ssl_stream.do_handshake()
-            self.addr_to_stream[addr] = ssl_stream
-        await self.addr_to_stream[addr].sendall(data)
+        if dest_replica not in self.ssl_streams:
+            await self._establish_ssl_stream(dest_replica)
+        await self.ssl_streams[dest_replica].send_all(data)
 
     async def receive_data(self, replicas_addr, max_size):
         """xxx"""
         async with trio.open_nursery() as nursery:
             for addr in replicas_addr:
-                stream = self.addr_to_stream[addr]
+                stream = self.ssl_streams[addr]
                 nursery.start_soon(stream.receive_some(max_size))
 
     def __enter__(self):
