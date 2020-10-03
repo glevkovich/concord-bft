@@ -274,6 +274,8 @@ class TcpTlsClient(BftClient):
     # In create_tls_certs.sh - openssl command line utility uses CN(certificate name) in the subj field.
     # This is the host name (domain name) to be verified.
     CERT_DOMAIN_FORMAT="node%dser"
+    # Taken from TlsTCPCommunication.cpp
+    MSG_HEADER_SIZE=4
 
     def __init__(self, config, replicas):
         super().__init__(config, replicas)
@@ -296,7 +298,7 @@ class TcpTlsClient(BftClient):
         return os.path.join(self.config.certs_path, str(replica_id), cert_type, cert_type + ".cert")
 
     async def _establish_ssl_stream(self, dest_replica):
-        print(f"===start {(dest_replica.ip, dest_replica.port)}")
+        #print(f"===start {(dest_replica.ip, dest_replica.port)}")
         while True:
             try:
                 ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -306,8 +308,8 @@ class TcpTlsClient(BftClient):
                 ssl_context.load_verify_locations(cafile=server_cert_path)
                 ssl_context.load_cert_chain(client_cert_path, client_pk_path)
                 server_hostname = self.CERT_DOMAIN_FORMAT % dest_replica.id
-                print(f"{server_cert_path} {client_cert_path} {client_pk_path} {server_hostname}")
-                tcp_stream = await trio.open_tcp_stream(str(dest_replica.ip), int(dest_replica.port), local_address=self.CERT_DOMAIN_FORMAT % dest_replica.id)
+                #print(f"{server_cert_path} {client_cert_path} {client_pk_path} {server_hostname}")
+                tcp_stream = await trio.open_tcp_stream(str(dest_replica.ip), int(dest_replica.port), local_address="localhost")
                 ssl_stream = trio.SSLStream(tcp_stream, ssl_context, server_hostname=server_hostname, https_compatible=False)
                 await ssl_stream.do_handshake()
                 self.ssl_streams[(dest_replica.ip, dest_replica.port)] = ssl_stream
@@ -315,15 +317,18 @@ class TcpTlsClient(BftClient):
                 break
             except OSError as e:
                 self.comm_retries += 1
-                print(f"===retry to {(dest_replica.ip, dest_replica.port)}")
+                #print(f"===retry to {(dest_replica.ip, dest_replica.port)}")
                 await trio.sleep(0.5)
                 continue
 
     async def _send_data(self, data, dest_replica):
         dest_addr = (dest_replica.ip, dest_replica.port)
-        print(f"sending {self.client_id} to {dest_addr}")
+        data_len = len(data)
+        out_buff = bytearray(data_len.to_bytes(self.MSG_HEADER_SIZE, "little"))
+        out_buff += bytearray(data)
+        print(f"sending src={self.client_id} to dest={dest_addr} total_len={len(out_buff)} out_buff={['{0:0>2X}'.format(b) for b in out_buff]}")
         stream = self.ssl_streams[dest_addr]
-        await stream.send_all(data)
+        await stream.send_all(out_buff)
         print(f"sent to {dest_addr} data_len={len(data)}")
 
     async def _receive_from_replica(self, dest_addr, max_size, cancel_scope, result):
@@ -346,4 +351,4 @@ class TcpTlsClient(BftClient):
 
     async def __exit__(self, *args):
         for stream in self.ssl_streams.keys():
-            stream.aclose()
+            await stream.aclose()
