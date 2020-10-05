@@ -91,11 +91,11 @@ class BftClient(ABC):
         self.comm_prepared = False
 
     @abstractmethod
-    def __enter__(self):
+    async def __aenter__(self):
         pass
 
     @abstractmethod
-    def __exit__(self, *args):
+    async def __aexit__():
         pass
 
     @abstractmethod
@@ -103,11 +103,7 @@ class BftClient(ABC):
         pass
 
     @abstractmethod
-    async def _receive_from_replicas(self, replicas_addr, max_size):
-        pass
-
-    @abstractmethod
-    async def _comm_prepare(self):
+    async def _comm_prepare(self, read_only):
         pass
 
     async def write(self, msg, seq_num=None, cid=None, pre_process=False, m_of_n_quorum=None):
@@ -141,8 +137,7 @@ class BftClient(ABC):
          not already bound.
         """
         if not self.comm_prepared:
-            await self._comm_prepare()
-            self.comm_prepared = True
+            await self._comm_prepare(read_only)
 
         if seq_num is None:
             seq_num = self.req_seq_num.next()
@@ -159,7 +154,6 @@ class BftClient(ABC):
         try:
             with trio.fail_after(self.config.req_timeout_milli / 1000):
                 self._reset_on_new_request()
-                self.retries = 0
                 return await self._send_receive_loop(data, read_only, m_of_n_quorum)
         except trio.TooSlowError:
             print("TooSlowError thrown from client_id", self.client_id, "for seq_num", seq_num)
@@ -215,8 +209,44 @@ class BftClient(ABC):
 
     async def _sendto(self, request, replica):
         """Send a request"""
-        await self._send_data(request, replica)
-        self.msgs_sent += 1
+        if await self._send_data(request, replica):
+            self.msgs_sent += 1
+
+    def _valid_reply(self, header, sender, dest_replicas):
+        return self.req_seq_num.val() == header.req_seq_num and sender in dest_replicas
+
+    def get_rsi_replies(self):
+        """
+        Return a dictionary of {id: data} of the replicas specific information.
+        This method should be called after the send has done and before initiating a new request
+        """
+        return self.rsi_replies
+
+    def _process_received_msg(self, data, sender, replicas_addr, required_replies, cancel_scope):
+        rsi_msg = rsi.MsgWithReplicaSpecificInfo(data, sender)
+        header, reply = rsi_msg.get_common_reply()
+        if self._valid_reply(header, rsi_msg.get_sender_id(), replicas_addr):
+            quorum_size = self.replies_manager.add_reply(rsi_msg)
+            if quorum_size == required_replies:
+                self.reply = reply
+                self.rsi_replies = self.replies_manager.get_rsi_replies(rsi_msg.get_matched_reply_key())
+                self.primary = self.replicas[header.primary_id]
+                cancel_scope.cancel()
+
+class UdpClient(BftClient):
+    def __init__(self, config, replicas):
+        super().__init__(config, replicas)
+        self.sock = trio.socket.socket(trio.socket.AF_INET, trio.socket.SOCK_DGRAM)
+        self.port = BASE_PORT + 2 * self.client_id
+
+    async def _comm_prepare(self, read_only):
+        """ Bind the socket to address, where each port is a function of its client_id """
+        await self.sock.bind(('localhost', self.port))
+        self.comm_prepared = True
+
+    async def _send_data(self, data, replica):
+        await self.sock.sendto(data, (replica.ip, replica.port))
+        return True
 
     async def _recv(self, required_replies, dest_replicas, cancel_scope):
         """
@@ -225,48 +255,14 @@ class BftClient(ABC):
         """
         replicas_addr = [(r.ip, r.port) for r in dest_replicas]
         while True:
-            data, sender = await self._receive_from_replicas(replicas_addr, self.config.max_msg_size)
-            rsi_msg = rsi.MsgWithReplicaSpecificInfo(data, sender)
-            header, reply = rsi_msg.get_common_reply()
-            if self._valid_reply(header, rsi_msg.get_sender_id(), replicas_addr):
-                quorum_size = self.replies_manager.add_reply(rsi_msg)
-                if quorum_size == required_replies:
-                    self.reply = reply
-                    self.rsi_replies = self.replies_manager._get_rsi_replies(rsi_msg.get_matched_reply_key())
-                    self.primary = self.replicas[header.primary_id]
-                    cancel_scope.cancel()
+            data, sender = await self.sock.recvfrom(self.config.max_msg_size)
+            self._process_received_msg(data, sender, replicas_addr, required_replies, cancel_scope)
 
-    def _valid_reply(self, header, sender, dest_replicas):
-        return self.req_seq_num.val() == header.req_seq_num and sender in dest_replicas
-
-    def _get_rsi_replies(self):
-        """
-        Return a dictionary of {id: data} of the replicas specific information.
-        This method should be called after the send has done and before initiating a new request
-        """
-        return self.rsi_replies
-
-class UdpClient(BftClient):
-    def __init__(self, config, replicas):
-        super().__init__(config, replicas)
-        self.sock = trio.socket.socket(trio.socket.AF_INET, trio.socket.SOCK_DGRAM)
-        self.port = BASE_PORT + 2 * self.client_id
-
-    async def _comm_prepare(self):
-        """ Bind the socket to address, where each port is a function of its client_id """
-        await self.sock.bind(('localhost', self.port))
-
-    async def _send_data(self, data, replica):
-        await self.sock.sendto(data, (replica.ip, replica.port))
-
-    async def _receive_from_replicas(self, replicas_addr, max_size):
-        return await self.sock._recvfrom(max_size)
-
-    def __enter__(self):
+    async def __aenter__(self):
         """context manager method for 'with' statements"""
         return self
 
-    def __exit__(self, *args):
+    async def __aexit__(self):
         """context manager method for 'with' statements"""
         self.sock.close()
 
@@ -277,17 +273,26 @@ class TcpTlsClient(BftClient):
     # Taken from TlsTCPCommunication.cpp
     MSG_HEADER_SIZE=4
 
-    def __init__(self, config, replicas):
+    def __init__(self, config, replicas, bft_network):
         super().__init__(config, replicas)
         self.ssl_streams = dict()
+        self.bft_network = bft_network
+        self.certs_generated = False
 
-    async def _comm_prepare(self):
+    async def _comm_prepare(self, read_only):
         """establish a TLS over TCP connections to all replicas"""
+        if not (read_only or self.primary is None):
+            return
+        if not self.certs_generated:
+            self.bft_network.generate_tls_certs(1, self.client_id)
+            self.certs_generated = True
         self.comm_retries = 0
-        with trio.fail_after(30.0):
+        with trio.move_on_after(2.0) as cancel_scope:
             async with trio.open_nursery() as nursery:
                 for replica in self.replicas:
-                    nursery.start_soon(self._establish_ssl_stream, replica)
+                    if (replica.ip, replica.port) not in self.ssl_streams.keys():
+                        nursery.start_soon(self._establish_ssl_stream, replica)
+        self.comm_prepared = (len(self.replicas) == len(self.ssl_streams))
 
     def _get_private_key_path(self, replica_id, is_client=False):
         cert_type = "client" if is_client else "server"
@@ -313,42 +318,74 @@ class TcpTlsClient(BftClient):
                 ssl_stream = trio.SSLStream(tcp_stream, ssl_context, server_hostname=server_hostname, https_compatible=False)
                 await ssl_stream.do_handshake()
                 self.ssl_streams[(dest_replica.ip, dest_replica.port)] = ssl_stream
-                print(f"===connected to {(dest_replica.ip, dest_replica.port)}")
+                #print(f"===connected to {(dest_replica.ip, dest_replica.port)}")
                 break
-            except OSError as e:
+            except (OSError, trio.BrokenResourceError):
                 self.comm_retries += 1
-                #print(f"===retry to {(dest_replica.ip, dest_replica.port)}")
                 await trio.sleep(0.5)
                 continue
 
     async def _send_data(self, data, dest_replica):
         dest_addr = (dest_replica.ip, dest_replica.port)
+        if dest_addr not in self.ssl_streams.keys():
+            return False
         data_len = len(data)
         out_buff = bytearray(data_len.to_bytes(self.MSG_HEADER_SIZE, "little"))
         out_buff += bytearray(data)
-        print(f"sending src={self.client_id} to dest={dest_addr} total_len={len(out_buff)} out_buff={['{0:0>2X}'.format(b) for b in out_buff]}")
+        #print(f"sending src={self.client_id} to dest={dest_addr} total_len={len(out_buff)} out_buff={['{0:0>2X}'.format(b) for b in out_buff]}")
+        #print(f"sending src={self.client_id} to dest={dest_addr} total_len={len(out_buff)}")
         stream = self.ssl_streams[dest_addr]
-        await stream.send_all(out_buff)
-        print(f"sent to {dest_addr} data_len={len(data)}")
+        try:
+            await stream.send_all(out_buff)
+        except (trio.BrokenResourceError, trio.ClosedResourceError):
+             await stream.aclose()
+             del self.ssl_streams[dest_addr]
+             self.comm_prepared = False
+             return False
+        #print(f"sent to {dest_addr} data_len={len(data)}")
+        return True
 
-    async def _receive_from_replica(self, dest_addr, max_size, cancel_scope, result):
+    async def _stream_recv_some(self, out_data, dest_addr, stream, num_bytes):
+        try:
+            out_data += await stream.receive_some(num_bytes)
+            return True
+        except (trio.BrokenResourceError, trio.ClosedResourceError):
+            await stream.aclose()
+            del self.ssl_streams[dest_addr]
+            self.comm_prepared = False
+            return False
+
+    async def _receive_from_replica(self, dest_addr, replicas_addr, required_replies, cancel_scope):
+        data = bytearray()
         stream = self.ssl_streams[dest_addr]
-        print(f"receiving from {dest_addr}")
-        data = await stream.receive_some(max_size)
-        print(f"received from {dest_addr}")
-        result = (data, dest_addr)
-        cancel_scope.cancel()
+        #print(f"receiving from {dest_addr}")
+        while len(data) < self.MSG_HEADER_SIZE:
+            if not await self._stream_recv_some(data, dest_addr, stream, self.MSG_HEADER_SIZE):
+                return
+        payload_size = int.from_bytes(data[:self.MSG_HEADER_SIZE], "little")
+        del data[:self.MSG_HEADER_SIZE]
+        while len(data) < payload_size:
+            if not await self._stream_recv_some(data, dest_addr, stream, payload_size - len(data)):
+                return
+        #print(f"received from {dest_addr}")
+        self._process_received_msg(bytes(data), dest_addr, replicas_addr, required_replies, cancel_scope)
 
-    async def _receive_from_replicas(self, replicas_addr, max_size):
-        result = tuple()
+    async def _recv(self, required_replies, dest_replicas, cancel_scope):
+        """
+        Receive reply messages until a quorum is achieved or the enclosing
+        cancel_scope times out.
+        """
+        replicas_addr = [(r.ip, r.port) for r in dest_replicas]
         async with trio.open_nursery() as nursery:
             for dest_addr in replicas_addr:
-                nursery.start_soon(self._receive_from_replica, dest_addr, max_size, nursery.cancel_scope, result)
-        return result
-
-    async def __enter__(self):
+                if dest_addr in self.ssl_streams.keys():
+                    nursery.start_soon(self._receive_from_replica, dest_addr, replicas_addr, required_replies,
+                                       nursery.cancel_scope)
+    async def __aenter__(self):
         pass
 
-    async def __exit__(self, *args):
-        for stream in self.ssl_streams.keys():
+    async def __aexit__(self):
+        for stream in self.ssl_streams.values():
             await stream.aclose()
+
+
