@@ -13,7 +13,6 @@ import subprocess
 from abc import ABC, abstractmethod
 from itertools import combinations
 
-
 class NetworkPartitioningAdversary(ABC):
     """Represents an adversary capable of inflicting network partitioning"""
 
@@ -75,13 +74,11 @@ class NetworkPartitioningAdversary(ABC):
             check=True
         )
 
-
 class PassiveAdversary(NetworkPartitioningAdversary):
     """ Adversary does nothing = synchronous network """
 
     def interfere(self):
         pass
-
 
 class PrimaryIsolatingAdversary(NetworkPartitioningAdversary):
     """ Adversary that intercepts and drops all outgoing packets from the current primary """
@@ -96,7 +93,6 @@ class PrimaryIsolatingAdversary(NetworkPartitioningAdversary):
             replica_port = self.bft_network.replicas[replica].port
 
             self._drop_packets_between(primary_port, replica_port)
-
 
 class PacketDroppingAdversary(NetworkPartitioningAdversary):
     """ Adversary that drops random packets between all replicas """
@@ -114,7 +110,6 @@ class PacketDroppingAdversary(NetworkPartitioningAdversary):
             self._drop_packets_between(
                 source_port, dest_port, self.drop_rate_percentage
             )
-
 
 class ReplicaSubsetIsolatingAdversary(NetworkPartitioningAdversary):
     """
@@ -142,7 +137,6 @@ class ReplicaSubsetIsolatingAdversary(NetworkPartitioningAdversary):
                 isolated_replica_port = self.bft_network.replicas[ir].port
                 self._drop_packets_between(c.port, isolated_replica_port)
                 self._drop_packets_between(isolated_replica_port, c.port)
-
 
 class ReplicaSubsetOneWayIsolatingAdversary(NetworkPartitioningAdversary):
     """
