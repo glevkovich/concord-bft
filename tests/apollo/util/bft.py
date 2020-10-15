@@ -23,6 +23,7 @@ from collections import namedtuple
 import tempfile
 from functools import wraps
 from datetime import datetime
+from functools import partial
 import inspect
 
 import trio
@@ -74,7 +75,6 @@ def interesting_configs(selected=None):
             "Invariant breached. Expected: n = 3f + 2c + 1"
 
     return selected_bft_configs
-
 
 def with_trio(async_fn):
     """ Decorator for running a coroutine (async_fn) with trio. """
@@ -141,7 +141,7 @@ def with_bft_network(start_replica_cmd, selected_configs=None, num_clients=None,
                                         start_replica_cmd=start_replica_cmd,
                                         stop_replica_cmd=None,
                                         num_ro_replicas=num_ro_replicas)
-                    with BftTestNetwork.new(config) as bft_network:
+                    async with BftTestNetwork.new(config) as bft_network:
                         storage_type = os.environ.get("STORAGE_TYPE")
                         bft_network.current_test = async_fn.__name__ + "_" + storage_type \
                                                                      + "_n=" + str(bft_config['n']) \
@@ -158,28 +158,26 @@ REQ_TIMEOUT_MILLI = 5000
 RETRY_TIMEOUT_MILLI = 250
 METRICS_TIMEOUT_SEC = 5
 
-
 # TODO: This is not generic, but is required for use by SimpleKVBC. In the
 # future we will likely want to change how we determine the lengths of keys and
 # values, make them parameterizable, or generate keys in the protocols rather
 # than tester. For now, all keys and values must be 21 bytes.
 KV_LEN = 21
 
-
 class BftTestNetwork:
     """Encapsulates a BFT network instance for testing purposes"""
 
-    def __enter__(self):
+    async def __aenter__(self):
         """context manager method for 'with' statements"""
         return self
 
-    def __exit__(self, *args):
+    async def __aexit__(self, etype, value, tb):
         """context manager method for 'with' statements"""
         if not self.is_existing:
             for client in self.clients.values():
-                client.__exit__()
+                await client.__aexit__()
             for client in self.reserved_clients.values():
-                client.__exit__()
+                await client.__aexit__()
             self.metrics.__exit__()
             self.stop_all_replicas()
             os.chdir(self.origdir)
@@ -202,7 +200,8 @@ class BftTestNetwork:
         if client_factory:
             self.client_factory = client_factory
         else:
-            self.client_factory = self._create_new_udp_client
+            # To run TLS client, replace bft_client.UdpClient with bft_client.TcpTlsClient
+            self.client_factory = partial(self._create_new_client, bft_client.UdpClient)
         self.open_fds = {}
         self.current_test = ""
 
@@ -226,13 +225,15 @@ class BftTestNetwork:
             client_factory = client_factory
         )
 
-        #copy loggging.properties file
+        # Copy logging.properties file
         shutil.copy(os.path.abspath("../simpleKVBC/scripts/logging.properties"), testdir)
 
         log.log_message(message_type=f"Running test in {bft_network.testdir}")
 
         os.chdir(bft_network.testdir)
         bft_network._generate_crypto_keys()
+        # Generate certificates only for replicas. Client certificates will be generated on-demand.
+        bft_network.generate_tls_certs(config.n)
 
         bft_network._init_metrics()
         bft_network._create_clients()
@@ -258,7 +259,7 @@ class BftTestNetwork:
         bft_network._init_metrics()
         return bft_network
 
-    def change_configuration(self, config):
+    async def change_configuration(self, config):
         """
         When changing an existing bft-network, we would want to change only its configuration related parts
         such as: n,f,c and the parts that are affected by this change (keys, and clients)
@@ -269,9 +270,9 @@ class BftTestNetwork:
 
         # remove all existing clients
         for client in self.clients.values():
-            client.__exit__()
+            await client.__aexit__()
         for client in self.reserved_clients.values():
-            client.__exit__()
+            await client.__aexit__()
         self.metrics.__exit__()
         self.clients = {}
 
@@ -281,10 +282,11 @@ class BftTestNetwork:
                     for i in range(0, config.n + config.num_ro_replicas)]
 
         self._generate_crypto_keys()
+        # Generate certificates only for replicas. Client certificates will be generated on-demand.
+        self.generate_tls_certs(config.n)
 
         self._init_metrics()
         self._create_clients()
-
 
     def _generate_crypto_keys(self):
         keygen = os.path.join(self.toolsdir, "GenerateConcordKeys")
@@ -294,14 +296,30 @@ class BftTestNetwork:
         args.extend(["-o", self.config.key_file_prefix])
         subprocess.run(args, check=True)
 
+    def generate_tls_certs(self, num_to_generate, start_index=0):
+        """
+        Generate 'num_to_generate' certificates and private keys. The certificates are generated on a a given range of
+        node IDs folders [start_index, start_index+num_to_generate-1] into an output certificate root folder
+        self.certs_path.
+        Since every node might be a potential client and/or server, each node certificate folder consists of the
+        subfolders 'client' and 'server'. Each subfolder holds an X.509 certificate client.cert or server.cert and the
+        matching private key pk.pem file (PEM format). All certificates are generated using bash script
+        create_tls_certs.sh.
+        The output is generated into the test folder to a folder called 'certs'.
+        """
+        certs_gen_script_path = os.path.join(self.builddir, "tests/simpleTest/scripts/create_tls_certs.sh")
+        self.certs_path = os.path.join(self.testdir, "certs")
+        args = [certs_gen_script_path, str(num_to_generate), self.certs_path, str(start_index)]
+        subprocess.run(args, check=True, stdout=subprocess.DEVNULL)
+
     def _create_clients(self):
         for client_id in range(self.config.n + self.config.num_ro_replicas,
                                self.config.num_clients+self.config.n + self.config.num_ro_replicas):
             self.clients[client_id] = self.client_factory(client_id)
 
-    def _create_new_udp_client(self, client_id):
-        config = self._bft_config(client_id)
-        return bft_client.UdpClient(config, self.replicas)
+    def _create_new_client(self, client_class, client_id):
+        config = self._bft_config(client_id, self.certs_path)
+        return client_class(config, self.replicas, self)
 
     async def new_client(self):
         client_id = max(self.clients.keys() | self.reserved_clients.keys()) + 1
@@ -315,13 +333,14 @@ class BftTestNetwork:
         self.reserved_clients[reserved_client_id] = reserved_client
         return reserved_client
 
-    def _bft_config(self, client_id):
+    def _bft_config(self, client_id, certs_path):
         return bft_config.Config(client_id,
                                  self.config.f,
                                  self.config.c,
                                  MAX_MSG_SIZE,
                                  REQ_TIMEOUT_MILLI,
-                                 RETRY_TIMEOUT_MILLI)
+                                 RETRY_TIMEOUT_MILLI,
+                                 certs_path)
 
     def _init_metrics(self):
         metric_clients = {}
@@ -338,15 +357,18 @@ class BftTestNetwork:
     def start_replica_cmd(self, replica_id):
         """
         Returns command line to start replica with the given id
-        If the callback accepts three parameters and one of them
-        is named 'config' - pass the network configuration too.
+        If the callback accepts three parameters and one of them is named 'config' - pass the network configuration too.
+        Append the SSL certificate path. This is needed only for TLS communication but done anyhow for simplicity.
         """
         with log.start_action(action_type="start_replica_cmd"):
             start_replica_fn_args = inspect.getfullargspec(self.config.start_replica_cmd).args
             if "config" in start_replica_fn_args and len(start_replica_fn_args) == 3:
-                return self.config.start_replica_cmd(self.builddir, replica_id, self.config)
+                cmd = self.config.start_replica_cmd(self.builddir, replica_id, self.config)
             else:
-                return self.config.start_replica_cmd(self.builddir, replica_id)
+                cmd = self.config.start_replica_cmd(self.builddir, replica_id)
+            cmd.append("-c")
+            cmd.append(self.certs_path)
+            return cmd
 
     def stop_replica_cmd(self, replica_id):
         """
@@ -364,6 +386,7 @@ class BftTestNetwork:
                         raise
 
             assert len(self.procs) == self.config.n
+
 
     def stop_all_replicas(self):
         """ Stop all running replicas"""
@@ -507,7 +530,6 @@ class BftTestNetwork:
                 replica_id=live_replica, expected=None)
 
             return current_view
-
 
     async def get_metric(self, replica_id, bft_network, mtype, mname):
         with trio.fail_after(seconds=30):
@@ -894,11 +916,11 @@ class BftTestNetwork:
                         except KeyError:
                             # metrics not yet available, continue looping
                             pass
-    
+
     async def do_key_exchange(self):
         """
         Performs initial key exchange, starts all replicas, validate the exchange and stops all replicas.
-        The stop is done in order for a test who uses this functionallity, to proceed wihtout imposing n up replicas.
+        The stop is done in order for a test who uses this functionality, to proceed without imposing n up replicas.
         """
         with log.start_action(action_type="do_key_exchange"):
             self.start_all_replicas()
@@ -912,13 +934,12 @@ class BftTestNetwork:
                                 if value < self.config.n:
                                     continue
                             except trio.TooSlowError:
-                                print(
-                                    f"Replica {replica_id} was not able to exchange keys on start")
+                                print(f"Replica {replica_id} was not able to exchange keys on start")
                                 raise KeyExchangeError
                             else:
                                 assert value == self.config.n
                                 break
-                                
+
 
             with trio.fail_after(seconds=5):
                 lastExecutedKey = ['replica', 'Gauges', 'lastExecutedSeqNum']
