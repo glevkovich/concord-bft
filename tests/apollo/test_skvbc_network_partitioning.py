@@ -61,7 +61,7 @@ class SkvbcNetworkPartitioningTest(unittest.TestCase):
                 bft_network, drop_rate_percentage=5) as adversary:
             self.skvbc = kvbc.SimpleKVBCProtocol(bft_network)
             self.bft_network = bft_network
-            bft_network.start_all_replicas()
+            await bft_network.start_all_replicas()
 
             adversary.interfere()
 
@@ -83,7 +83,7 @@ class SkvbcNetworkPartitioningTest(unittest.TestCase):
         5) Perform a "read-your-writes" check in the new view
         """
         with net.PrimaryIsolatingAdversary(bft_network) as adversary:
-            bft_network.start_all_replicas()
+            await bft_network.start_all_replicas()
 
             initial_primary = 0
             await bft_network.wait_for_view(
@@ -123,7 +123,7 @@ class SkvbcNetworkPartitioningTest(unittest.TestCase):
         adversary hasn't been active for long enough for the unaffected replicas
         to trigger a checkpoint.
         """
-        bft_network.start_all_replicas()
+        await bft_network.start_all_replicas()
 
         f = bft_network.config.f
         curr_primary = await bft_network.get_current_primary()
@@ -158,7 +158,7 @@ class SkvbcNetworkPartitioningTest(unittest.TestCase):
         trigger a checkpoint. Then, once the adversary is not active anymore, we make
         sure the isolated replicas catch up via state transfer.
         """
-        bft_network.start_all_replicas()
+        await bft_network.start_all_replicas()
         skvbc = kvbc.SimpleKVBCProtocol(bft_network)
 
         f = bft_network.config.f
@@ -197,7 +197,7 @@ class SkvbcNetworkPartitioningTest(unittest.TestCase):
         The adversary is then deactivated and we make sure the previously isolated replicas
         activate the new view and correctly process incoming client requests.
         """
-        bft_network.start_all_replicas()
+        await bft_network.start_all_replicas()
 
         f = bft_network.config.f
         initial_primary = await bft_network.get_current_primary()
@@ -208,7 +208,7 @@ class SkvbcNetworkPartitioningTest(unittest.TestCase):
         with net.ReplicaSubsetIsolatingAdversary(bft_network, isolated_replicas) as adversary:
             adversary.interfere()
 
-            bft_network.stop_replica(initial_primary)
+            await bft_network.stop_replica(initial_primary)
             await self._send_random_writes(tracker)
 
             await bft_network.wait_for_view(
@@ -252,7 +252,7 @@ class SkvbcNetworkPartitioningTest(unittest.TestCase):
         ensure the isolated node still operates correctly.
         """
 
-        bft_network.start_all_replicas()
+        await bft_network.start_all_replicas()
         skvbc = kvbc.SimpleKVBCProtocol(bft_network)
 
         n = bft_network.config.n

@@ -75,7 +75,7 @@ class SkvbcChaoticStartupTest(unittest.TestCase):
         try:
             # Delayed replica start-up...
             for r in replicas_starting_order:
-                bft_network.start_replica(r)
+                await bft_network.start_replica(r)
                 await trio.sleep(seconds=10)
 
             current_view = await bft_network.wait_for_view(
@@ -109,9 +109,9 @@ class SkvbcChaoticStartupTest(unittest.TestCase):
             restarted_replica = random.choice(non_primaries)
             log.log_message(message_type=f"Restart replica #{restarted_replica} to make sure its view is persistent...")
 
-            bft_network.stop_replica(restarted_replica)
+            await bft_network.stop_replica(restarted_replica)
             await trio.sleep(seconds=5)
-            bft_network.start_replica(restarted_replica)
+            await bft_network.start_replica(restarted_replica)
 
             await trio.sleep(seconds=20)
 
@@ -172,7 +172,7 @@ class SkvbcChaoticStartupTest(unittest.TestCase):
         early_replicas = bft_network.random_set_of_replicas(f, without={initial_primary})
 
         log.log_message(message_type=f"STATUS: Starting F={f} replicas.")
-        bft_network.start_replicas(replicas=early_replicas)
+        await bft_network.start_replicas(replicas=early_replicas)
         log.log_message(message_type="STATUS: Wait for early replicas to initiate View Change.")
         await self._wait_for_less_than_f_plus_one_replicas_to_initiate_viewchange(early_replicas, bft_network)
         log.log_message(message_type="STATUS: Early replicas initiated View Change.")
@@ -180,7 +180,7 @@ class SkvbcChaoticStartupTest(unittest.TestCase):
         late_replicas = bft_network.all_replicas(without=early_replicas)
 
         log.log_message(message_type=f"STATUS: Starting the remaining {n-f} replicas.")
-        bft_network.start_replicas(late_replicas)
+        await bft_network.start_replicas(late_replicas)
 
         view = await bft_network.wait_for_view(
             replica_id=initial_primary,
@@ -207,7 +207,7 @@ class SkvbcChaoticStartupTest(unittest.TestCase):
         replica_to_stop = random.choice(bft_network.all_replicas(without=early_replicas | {initial_primary,
                                                                                            expected_next_primary}))
         log.log_message(message_type=f'STATUS: Stopping one of the later replicas with ID={replica_to_stop}')
-        bft_network.stop_replica(replica_to_stop)
+        await bft_network.stop_replica(replica_to_stop)
 
         # Wait for View Change to happen.
         view = await bft_network.wait_for_view(
@@ -256,14 +256,14 @@ class SkvbcChaoticStartupTest(unittest.TestCase):
         log.log_message(message_type="STATUS: Early replicas are: ")
         log.log_message(message_type=early_replicas)
         log.log_message(message_type=f"STATUS: Starting F={f - 1} replicas.")
-        bft_network.start_replicas(replicas=early_replicas)
+        await bft_network.start_replicas(replicas=early_replicas)
         await self._wait_for_less_than_f_plus_one_replicas_to_initiate_viewchange(early_replicas, bft_network)
         log.log_message(message_type="STATUS: Early replicas started and initiated View Change.")
 
 
         late_replicas = bft_network.all_replicas(without=early_replicas)
         log.log_message(message_type=f"STATUS: Starting the remaining {n - f + 1} replicas.")
-        bft_network.start_replicas(late_replicas)
+        await bft_network.start_replicas(late_replicas)
 
         view = await bft_network.wait_for_view(
             replica_id=initial_primary,
@@ -284,7 +284,7 @@ class SkvbcChaoticStartupTest(unittest.TestCase):
 
         # We stop the current primary and let the system to install a new view, while assuming the identity of
         # the next primary
-        bft_network.stop_replica(initial_primary)
+        await bft_network.stop_replica(initial_primary)
 
         # We wait enough time to be sure that the earliest background client request is timed out such that the replicas
         # will initiate view change before apollo's metric client will time out
@@ -332,7 +332,7 @@ class SkvbcChaoticStartupTest(unittest.TestCase):
         ) as adversary:
             adversary.interfere()
 
-            bft_network.start_all_replicas()
+            await bft_network.start_all_replicas()
 
             # await replicas to initiate View Change from 0 to 1
             for r in bft_network.all_replicas():

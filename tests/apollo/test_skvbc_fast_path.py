@@ -64,7 +64,7 @@ class SkvbcFastPathTest(unittest.TestCase):
         if exchange_keys:
             await bft_network.do_key_exchange()
 
-        bft_network.start_all_replicas()
+        await bft_network.start_all_replicas()
         write_weight = .50
         numops = 100
 
@@ -93,7 +93,7 @@ class SkvbcFastPathTest(unittest.TestCase):
         Finally the decorator verifies the KV execution.
         """
         lastExecutedVal = await bft_network.do_key_exchange()
-        bft_network.start_all_replicas()
+        await bft_network.start_all_replicas()
 
         write_weight = 0.5
         numops = 100
@@ -104,7 +104,7 @@ class SkvbcFastPathTest(unittest.TestCase):
         await bft_network.wait_for_fast_path_to_be_prevalent()
 
         unstable_replicas = bft_network.all_replicas(without={0})
-        bft_network.stop_replica(
+        await bft_network.stop_replica(
             replica_id=random.choice(unstable_replicas))
 
         await tracker.run_concurrent_ops(num_ops=numops, write_weight=write_weight)
@@ -129,11 +129,11 @@ class SkvbcFastPathTest(unittest.TestCase):
         """
         lastExecutedVal = await bft_network.do_key_exchange()
 
-        bft_network.start_all_replicas()
+        await bft_network.start_all_replicas()
         unstable_replicas = bft_network.all_replicas(without={0})
         for _ in range(bft_network.config.c):
             replica_to_stop = random.choice(unstable_replicas)
-            bft_network.stop_replica(replica_to_stop)
+            await bft_network.stop_replica(replica_to_stop)
         write_weight = 0.5
         # make sure we first downgrade to the slow path...
         

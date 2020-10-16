@@ -53,7 +53,7 @@ class SkvbcMultiSig(unittest.TestCase):
         Validates that if all replicas are up and all key-exchnage msgs reached consensus via the fast path
         then the counter of the exchanged keys is equal to the cluster size in all replicas.
         """
-        bft_network.start_all_replicas()
+        await bft_network.start_all_replicas()
 
         with trio.fail_after(seconds=20):
             for replica_id in range(bft_network.config.n):
@@ -72,7 +72,7 @@ class SkvbcMultiSig(unittest.TestCase):
                             self.assertEqual(value, 7)
                             break
         
-       
+    @unittest.skip("Disabled due to BC-5081") 
     @with_trio
     @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)   
     async def test_rough_initial_key_exchange(self, bft_network):
@@ -82,7 +82,7 @@ class SkvbcMultiSig(unittest.TestCase):
         """
         skvbc = kvbc.SimpleKVBCProtocol(bft_network)
         replicas = bft_network.random_set_of_replicas(6, without={2})
-        bft_network.start_replicas(replicas)
+        await bft_network.start_replicas(replicas)
         
         with trio.fail_after(seconds=20):
             for replica_id in {0}:
@@ -107,9 +107,9 @@ class SkvbcMultiSig(unittest.TestCase):
         self.assertEqual(lastExecutedValBefore, lastExecutedValAfter)                      
         
         # make key exchange complete with partial set of replcia
-        bft_network.stop_replica(3)
+        await bft_network.stop_replica(3)
         time.sleep(2)
-        bft_network.start_replica(2)
+        await bft_network.start_replica(2)
 
         for i in range(10):
             await skvbc.write_known_kv()
@@ -138,7 +138,7 @@ class SkvbcMultiSig(unittest.TestCase):
             verify_checkpoint_persistency=False
         )
         # replica #3 should catch keys with ST
-        bft_network.start_replica(3)
+        await bft_network.start_replica(3)
         await bft_network.wait_for_state_transfer_to_start()
         await bft_network.wait_for_state_transfer_to_stop(0, 3)
         await skvbc.assert_successful_put_get(self)
@@ -166,7 +166,7 @@ class SkvbcMultiSig(unittest.TestCase):
     @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)  
     async def test_reload_fast_path_after_key_exchange(self, bft_network):
         
-        bft_network.start_all_replicas()
+        await bft_network.start_all_replicas()
         skvbc = kvbc.SimpleKVBCProtocol(bft_network)
 
         with trio.fail_after(seconds=20):
@@ -191,8 +191,8 @@ class SkvbcMultiSig(unittest.TestCase):
 
         lastExecutedKey = ['replica', 'Gauges', 'lastExecutedSeqNum']
         lastExecutedValBefore = await bft_network.metrics.get(3, *lastExecutedKey)
-        bft_network.stop_replica(3)
-        bft_network.start_replica(3)
+        await bft_network.stop_replica(3)
+        await bft_network.start_replica(3)
         for i in range(10):
             await skvbc.write_known_kv()
 
@@ -215,7 +215,7 @@ class SkvbcMultiSig(unittest.TestCase):
     @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)  
     async def test_reload_slows_path_after_key_exchange(self, bft_network):
         
-        bft_network.start_all_replicas()
+        await bft_network.start_all_replicas()
         skvbc = kvbc.SimpleKVBCProtocol(bft_network)
 
         with trio.fail_after(seconds=20):
@@ -235,14 +235,14 @@ class SkvbcMultiSig(unittest.TestCase):
                             self.assertEqual(value, 7)
                             break
         
-        bft_network.stop_replica(2)
+        await bft_network.stop_replica(2)
         for i in range(20):
             await skvbc.write_known_kv()
 
         lastExecutedKey = ['replica', 'Gauges', 'lastExecutedSeqNum']
         lastExecutedValBefore = await bft_network.metrics.get(3, *lastExecutedKey)
-        bft_network.stop_replica(3)
-        bft_network.start_replica(3)
+        await bft_network.stop_replica(3)
+        await bft_network.start_replica(3)
         for i in range(10):
             await skvbc.write_known_kv()
 
