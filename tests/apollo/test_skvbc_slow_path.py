@@ -70,10 +70,10 @@ class SkvbcSlowPathTest(unittest.TestCase):
         """
         await bft_network.do_key_exchange()
 
-        bft_network.start_all_replicas()
+        await bft_network.start_all_replicas()
 
         unstable_replicas = bft_network.all_replicas(without={0})
-        bft_network.stop_replica(
+        await bft_network.stop_replica(
             replica_id=random.choice(unstable_replicas))
 
         await bft_network.wait_for_slow_path_to_be_prevalent(
@@ -104,17 +104,17 @@ class SkvbcSlowPathTest(unittest.TestCase):
         if exchange_keys:
             await bft_network.do_key_exchange()
 
-        run_ops = lambda: tracker.run_concurrent_ops(num_ops=20, write_weight=1)
 
-        bft_network.start_all_replicas()
+        run_ops = lambda: tracker.run_concurrent_ops(num_ops=20, write_weight=1)
+        await bft_network.start_all_replicas()
 
         unstable_replicas = bft_network.all_replicas(without={0})
         crashed_replica = random.choice(unstable_replicas)
-        bft_network.stop_replica(crashed_replica)
+        await bft_network.stop_replica(crashed_replica)
 
         await bft_network.wait_for_slow_path_to_be_prevalent(run_ops=run_ops, threshold=20)
 
-        bft_network.start_replica(crashed_replica)
+        await bft_network.start_replica(crashed_replica)
 
         await bft_network.wait_for_fast_path_to_be_prevalent(run_ops=run_ops, threshold=20)
 
@@ -138,14 +138,14 @@ class SkvbcSlowPathTest(unittest.TestCase):
         We make sure the second batch of requests have been processed via the slow path.
         """
         await bft_network.do_key_exchange()
-        bft_network.start_all_replicas()
+        await bft_network.start_all_replicas()
 
         num_ops = 5
 
         await bft_network.wait_for_fast_path_to_be_prevalent(
             run_ops=lambda: tracker.run_concurrent_ops(num_ops=num_ops, write_weight=1), threshold=num_ops)
 
-        bft_network.stop_replica(0)
+        await bft_network.stop_replica(0)
 
         # trigger the view change
         await tracker.run_concurrent_ops(num_ops)
@@ -168,7 +168,7 @@ class SkvbcSlowPathTest(unittest.TestCase):
             async with trio.open_nursery() as nursery:
                 nursery.start_soon(tracker.send_indefinite_tracked_ops, 1)
 
-        bft_network.start_replica(0)
+        await bft_network.start_replica(0)
 
         await bft_network.assert_slow_path_prevalent(
             nb_fast_paths_to_ignore=nb_fast_paths_to_ignore,
