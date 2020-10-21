@@ -102,16 +102,6 @@ class BftClient(ABC):
         pass
 
     @abstractmethod
-    async def on_started_replicas(self, replica_ids):
-        """ Inform client when a group of replicas are started """
-        pass
-
-    @abstractmethod
-    async def on_stopped_replicas(self, replica_ids):
-        """ Inform client when a group of replicas are stopped """
-        pass
-
-    @abstractmethod
     async def _comm_prepare(self):
         """ Call before sending or receiving data. Some clients need to prepare their communication stack. """
         pass
@@ -269,7 +259,7 @@ class UdpClient(BftClient):
     Define a UDP client - sends and receive all data via a single port
     (connectionless / stateless datagram communication)
     """
-    def __init__(self, config, replicas):
+    def __init__(self, config, replicas, background_nursery):
         super().__init__(config, replicas)
         self.sock = trio.socket.socket(trio.socket.AF_INET, trio.socket.SOCK_DGRAM)
         self.port = bft_msg_port_from_node_id(self.client_id)
@@ -278,14 +268,6 @@ class UdpClient(BftClient):
         """ Bind the socket to 'localhost':port, where each port is a function of its client_id """
         await self.sock.bind(('localhost', self.port))
         self.comm_prepared = True
-
-    async def on_started_replicas(self, replica_ids):
-        """ UDP do nothing when replicas are started """
-        pass
-
-    async def on_stopped_replicas(self, replica_ids):
-        """ UDP do nothing when replicas are stopped """
-        pass
 
     async def _send_data(self, data, replica):
         """Send data. This operation always succeed after blocking, so True is always returned."""
@@ -332,20 +314,15 @@ class TcpTlsClient(BftClient):
     # Taken from TlsTCPCommunication.cpp (we prefer hard-code and not to parse the file)
     MSG_HEADER_SIZE=4
 
-    def __init__(self, config, replicas):
+    def __init__(self, config, replicas, background_nursery):
         super().__init__(config, replicas)
         self.ssl_streams = dict()
-
-    async def on_started_replicas(self, replica_ids):
-        """
-        Establish a TLS over TCP connections to all replicas concurrently (using a nursery). 
-        We relay on caller cancel scope.
-        """
-        async with trio.open_nursery() as nursery:
-            for id in replica_ids:
-                replica = self.replicas[id]
-                if (replica.ip, replica.port) not in self.ssl_streams.keys():
-                    nursery.start_soon(self._establish_ssl_stream, replica)
+        self.reconnect_nursery = background_nursery
+        self.reconnect_flag = True
+        # Start len(replicas) background tasks, where each task is responsible to keep conenct and re-connect to that
+        # replica
+        for replica in replicas:
+            background_nursery.start_soon(self._establish_ssl_stream, replica)
 
     def _get_private_key_path(self, replica_id, *, is_client):
         """
@@ -365,8 +342,14 @@ class TcpTlsClient(BftClient):
 
     async def _establish_ssl_stream(self, dest_replica):
         """
-        Try every 250ms to connect to dest_replica. We relay on the caller context that will trigger cancellation at 
-        some point in time. Break the loop on success and keep the ssl_stream in self.ssl_streams for future use.
+        A task try to connect to dest_replica on an infinite loop until informed to quit (on BFT client exit).
+        The method TcpTlsClient._establish_ssl_stream acts as a background task. It has 2 states:
+        1) Connected to dest_replica - in that case, sleep for 0.5 seconds, and check the status again.
+        2) Disconnected from dest_replica - in that case, try to connect to it. On success, insert the new SSL stream
+        into self.ssl_streams and move to state 1. On failure, sleep for 0.25 sec, and retry.
+
+        SSL stream might be remove from self.ssl_streams while sending or
+        receiving data, after finding out that connection is closed or broken.
         """
         server_cert_path = self._get_cert_path(dest_replica.id, is_client=False)
         client_cert_path = self._get_cert_path(self.client_id, is_client=True)
@@ -379,7 +362,11 @@ class TcpTlsClient(BftClient):
         ssl_context.load_cert_chain(client_cert_path, client_pk_path)
         # Server hostname to be verified must be taken from create_tls_certs.sh
         server_hostname = self.CERT_DOMAIN_FORMAT % dest_replica.id
-        while True:
+        dest_addr = (dest_replica.ip, dest_replica.port)
+        while self.reconnect_flag:
+            if dest_addr in self.ssl_streams:
+                await trio.sleep(0.5)
+                continue
             try:
                 # Open TCP stream and connect to server
                 tcp_stream = await trio.open_tcp_stream(str(dest_replica.ip), int(dest_replica.port))
@@ -389,23 +376,11 @@ class TcpTlsClient(BftClient):
                 # connection is open)
                 await ssl_stream.do_handshake()
                 # Success! keep stream in dictionary and break out
-                self.ssl_streams[(dest_replica.ip, dest_replica.port)] = ssl_stream
-                return
+                self.ssl_streams[dest_addr] = ssl_stream
             except (OSError, trio.BrokenResourceError):
                 await trio.sleep(0.25)
                 pass
             continue
-
-    async def on_stopped_replicas(self, replica_ids):
-        """ BFT network inform client when a group of replicas are stopped. We relay on caller cancel scope """
-        for id in replica_ids:
-            replica = self.replicas[id]
-            addr = (replica.ip, replica.port)
-            if addr in self.ssl_streams:
-                if addr in self.ssl_streams:
-                    stream = self.ssl_streams[addr]
-                    del self.ssl_streams[addr]
-                    await stream.aclose()
 
     async def _send_data(self, data, dest_replica):
         """ Try to send data to dest_replica. On exception - close the SSL stream. """
@@ -480,6 +455,7 @@ class TcpTlsClient(BftClient):
         """async context manager method for 'with' statements"""
         for stream in self.ssl_streams.values():
             await stream.aclose()
+        self.reconnect_flag = False
 
     def _process_received_msg_err(self, exception):
         """In TCP/TLS, connection might be truncated - ignore message"""
