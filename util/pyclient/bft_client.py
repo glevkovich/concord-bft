@@ -318,11 +318,16 @@ class TcpTlsClient(BftClient):
         super().__init__(config, replicas)
         self.ssl_streams = dict()
         self.reconnect_nursery = background_nursery
-        self.reconnect_flag = True
+        self.exit_flag = True
+        self.establish_ssl_stream_parklot = dict()
         # Start len(replicas) background tasks, where each task is responsible to keep conenct and re-connect to that
         # replica
         for replica in replicas:
-            background_nursery.start_soon(self._establish_ssl_stream, replica)
+            # For each thread, start a background task to keep connection established
+            # Upon successful connection, task will wait on an event (trio.lowlevel.ParkingLot to try to reconnect
+            lot = trio.lowlevel.ParkingLot()
+            background_nursery.start_soon(self._establish_ssl_stream, replica, lot)
+            self.establish_ssl_stream_parklot[(replica.ip, replica.port)] = lot
 
     def _get_private_key_path(self, replica_id, *, is_client):
         """
@@ -340,7 +345,7 @@ class TcpTlsClient(BftClient):
         cert_type = "client" if is_client else "server"
         return os.path.join(self.config.certs_path, str(replica_id), cert_type, cert_type + ".cert")
 
-    async def _establish_ssl_stream(self, dest_replica):
+    async def _establish_ssl_stream(self, dest_replica, lot):
         """
         A task try to connect to dest_replica on an infinite loop until informed to quit (on BFT client exit).
         The method TcpTlsClient._establish_ssl_stream acts as a background task. It has 2 states:
@@ -363,11 +368,13 @@ class TcpTlsClient(BftClient):
         # Server hostname to be verified must be taken from create_tls_certs.sh
         server_hostname = self.CERT_DOMAIN_FORMAT % dest_replica.id
         dest_addr = (dest_replica.ip, dest_replica.port)
-        while self.reconnect_flag:
-            if dest_addr in self.ssl_streams:
-                await trio.sleep(0.5)
-                continue
+        # initial state of the event should be True, we want to connect
+        while self.exit_flag:
             try:
+                try:
+                    assert dest_addr not in self.ssl_streams
+                except:
+                    print("got")
                 # Open TCP stream and connect to server
                 tcp_stream = await trio.open_tcp_stream(str(dest_replica.ip), int(dest_replica.port))
                 # Wrap this stream with SSL stream, pass server_hostname to be verified
@@ -377,16 +384,22 @@ class TcpTlsClient(BftClient):
                 await ssl_stream.do_handshake()
                 # Success! keep stream in dictionary and break out
                 self.ssl_streams[dest_addr] = ssl_stream
+                # park the task till we it is woken by unpark()
+                #print(f"connected! before park: {self.client_id} {dest_replica.id}")
+                await lot.park()
+                #print(f"connected! after park: {self.client_id} {dest_replica.id}")
             except (OSError, trio.BrokenResourceError):
-                await trio.sleep(0.25)
-                pass
+                await trio.sleep(0.1)
+                #print(f"retry connect! {self.client_id} {dest_replica.id}")
             continue
 
     async def _send_data(self, data, dest_replica):
         """ Try to send data to dest_replica. On exception - close the SSL stream. """
         dest_addr = (dest_replica.ip, dest_replica.port)
         if dest_addr not in self.ssl_streams.keys():
-            # dest_replica is not connected (crushed? isolated?) 
+            # dest_replica is not connected (crushed? isolated?)
+            #print(f"unpark 1! {self.client_id} {dest_replica.id}")
+            self.establish_ssl_stream_parklot[dest_addr].unpark()
             return
         # first 4 bytes include the data header (message size), then comes the data
         data_len = len(data)
@@ -401,6 +414,8 @@ class TcpTlsClient(BftClient):
             if dest_addr in self.ssl_streams:
                 del self.ssl_streams[dest_addr]
                 await stream.aclose()
+                #print(f"unpark 2! {self.client_id} {dest_replica.id}")
+                self.establish_ssl_stream_parklot[dest_addr].unpark()
             return False
 
     async def _stream_recv_some(self, out_data, dest_addr, stream, num_bytes):
@@ -412,6 +427,8 @@ class TcpTlsClient(BftClient):
             if dest_addr in self.ssl_streams:
                 del self.ssl_streams[dest_addr]
                 await stream.aclose()
+                #print(f"unpark 3! {self.client_id} {dest_addr}")
+                self.establish_ssl_stream_parklot[dest_addr].unpark()
             return False
 
     async def _receive_from_replica(self, dest_addr, replicas_addr, required_replies, cancel_scope):
@@ -423,6 +440,8 @@ class TcpTlsClient(BftClient):
         If there is an error in stages 1 or 2 - exit straight (connection is closed inside _stream_recv_some)
         """
         if dest_addr not in self.ssl_streams:
+            #print(f"unpark 4! {self.client_id} {dest_replica.id}")
+            self.establish_ssl_stream_parklot[dest_addr].unpark()
             return
         data = bytearray()
         stream = self.ssl_streams[dest_addr]
@@ -446,6 +465,9 @@ class TcpTlsClient(BftClient):
                 if dest_addr in self.ssl_streams.keys():
                     nursery.start_soon(self._receive_from_replica, dest_addr, replicas_addr, required_replies,
                                        nursery.cancel_scope)
+                else:
+                    #print(f"unpark 5! {self.client_id} {dest_addr}")
+                    self.establish_ssl_stream_parklot[dest_addr].unpark()
 
     async def __aenter__(self):
         """async context manager method for 'with' statements"""
@@ -453,9 +475,13 @@ class TcpTlsClient(BftClient):
 
     async def __aexit__(self, *args):
         """async context manager method for 'with' statements"""
+        for lot in self.establish_ssl_stream_parklot.values():
+            if lot:
+                #print(f"unpark 6! {self.client_id}")
+                lot.unpark()
+        self.exit_flag = False
         for stream in self.ssl_streams.values():
             await stream.aclose()
-        self.reconnect_flag = False
 
     def _process_received_msg_err(self, exception):
         """In TCP/TLS, connection might be truncated - ignore message"""
