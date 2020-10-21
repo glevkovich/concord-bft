@@ -39,14 +39,12 @@ class SimpleTest(unittest.TestCase):
         cls.serverbin = os.path.join(cls.builddir,"tests/simpleTest/server")
         os.chdir(cls.testdir)
         cls.generateKeys()
-        cls.config = bft_config.Config(4, 1, 0, 4096, 1000, 50)
-        cls.replicas = [
-                bft_config.Replica(
-                    id=i,
-                    ip="127.0.0.1",
-                    port=bft_client.BASE_PORT + 2*i,
-                    metrics_port=1000 + bft_client.BASE_PORT + 2*i)
-                for i in range(0,4)]
+        cls.config = bft_config.Config(4, 1, 0, 4096, 1000, 50, "")
+        cls.replicas = [bft_config.Replica(id=i,
+                                           ip="127.0.0.1",
+                                           port=bft_config.bft_msg_port_from_node_id(i),
+                                           metrics_port=bft_config.metrics_port_from_node_id(i))
+                        for i in range(0,4)]
 
         print("Running tests in {}".format(cls.testdir))
 
