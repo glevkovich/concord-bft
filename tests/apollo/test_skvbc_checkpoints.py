@@ -309,6 +309,7 @@ class SkvbcCheckpointTest(unittest.TestCase):
                 verify_checkpoint_persistency=False
             )
 
+    @unittest.skip("Unstable on CI")
     @with_trio
     @with_bft_network(start_replica_cmd)
     async def test_checkpoint_propagation_after_f_nodes_including_primary_isolated(self, bft_network):

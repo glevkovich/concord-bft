@@ -66,9 +66,12 @@ foreach(STORAGE_TYPE ${STORAGE_TYPES})
           "env ${APOLLO_TEST_ENV} STORAGE_TYPE=${STORAGE_TYPE} TEST_NAME=skvbc_preexecution_tests_${STORAGE_TYPE} python3 -m unittest test_skvbc_preexecution ${TEST_OUTPUT}"
           WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-  add_test(NAME skvbc_network_partitioning_tests_${STORAGE_TYPE} COMMAND sh -c
-          "env ${APOLLO_TEST_ENV} STORAGE_TYPE=${STORAGE_TYPE} TEST_NAME=skvbc_network_partitioning_tests_${STORAGE_TYPE} python3 -m unittest test_skvbc_network_partitioning ${TEST_OUTPUT}"
-          WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  # Disable due to unstable CI
+  if (NOT BUILD_COMM_TCP_TLS)
+    add_test(NAME skvbc_network_partitioning_tests_${STORAGE_TYPE} COMMAND sh -c
+            "env ${APOLLO_TEST_ENV} STORAGE_TYPE=${STORAGE_TYPE} TEST_NAME=skvbc_network_partitioning_tests_${STORAGE_TYPE} python3 -m unittest test_skvbc_network_partitioning ${TEST_OUTPUT}"
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  endif()
 
   add_test(NAME skvbc_checkpoints_${STORAGE_TYPE} COMMAND sh -c
           "env ${APOLLO_TEST_ENV} STORAGE_TYPE=${STORAGE_TYPE} TEST_NAME=skvbc_checkpoints_${STORAGE_TYPE} python3 -m unittest test_skvbc_checkpoints 2>&1 > /dev/null"

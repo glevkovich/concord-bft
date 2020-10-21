@@ -460,6 +460,7 @@ class SkvbcPreExecutionTest(unittest.TestCase):
             last_block = await tracker.get_last_block_id(read_client)
             assert last_block > start_block
 
+    @unittest.skip("Unstable on CI")
     @with_trio
     @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: f >= 2)
     @verify_linearizability(pre_exec_enabled=True, no_conflicts=True)
