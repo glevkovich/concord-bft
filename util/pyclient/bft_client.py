@@ -318,7 +318,7 @@ class TcpTlsClient(BftClient):
         super().__init__(config, replicas)
         self.ssl_streams = dict()
         self.reconnect_nursery = background_nursery
-        self.exit_flag = True
+        self.exit_flag = False
         self.establish_ssl_stream_parklot = dict()
         # Start len(replicas) background tasks, where each task is responsible to keep conenct and re-connect to that
         # replica
@@ -369,7 +369,7 @@ class TcpTlsClient(BftClient):
         server_hostname = self.CERT_DOMAIN_FORMAT % dest_replica.id
         dest_addr = (dest_replica.ip, dest_replica.port)
         # initial state of the event should be True, we want to connect
-        while self.exit_flag:
+        while not self.exit_flag:
             try:
                 try:
                     assert dest_addr not in self.ssl_streams
@@ -383,7 +383,11 @@ class TcpTlsClient(BftClient):
                 # connection is open)
                 await ssl_stream.do_handshake()
                 # Success! keep stream in dictionary and break out
-                self.ssl_streams[dest_addr] = ssl_stream
+                if not self.exit_flag:
+                    self.ssl_streams[dest_addr] = ssl_stream
+                else:
+                    await ssl_stream.aclose()
+                    break
                 # park the task till we it is woken by unpark()
                 #print(f"connected! before park: {self.client_id} {dest_replica.id}")
                 await lot.park()
@@ -413,23 +417,26 @@ class TcpTlsClient(BftClient):
             # Failed! close the stream and return failure.
             if dest_addr in self.ssl_streams:
                 del self.ssl_streams[dest_addr]
+                self.establish_ssl_stream_parklot[dest_addr].unpark()
                 await stream.aclose()
                 #print(f"unpark 2! {self.client_id} {dest_replica.id}")
-                self.establish_ssl_stream_parklot[dest_addr].unpark()
             return False
 
     async def _stream_recv_some(self, out_data, dest_addr, stream, num_bytes):
-        """ Try to receive data from replica. On failure - close the SSL stream. """
+        """ Try to receive data from replica. On failure - close the SSL stream. Return true if got at least 1 byte """
         try:
-            out_data += await stream.receive_some(num_bytes)
-            return len(out_data) == num_bytes
+            data = await stream.receive_some(num_bytes)
+            if len(data) > 0:
+                out_data += data
+                return True
         except (trio.BrokenResourceError, trio.ClosedResourceError):
-            if dest_addr in self.ssl_streams:
-                del self.ssl_streams[dest_addr]
-                await stream.aclose()
-                #print(f"unpark 3! {self.client_id} {dest_addr}")
-                self.establish_ssl_stream_parklot[dest_addr].unpark()
-            return False
+            pass
+        # We got EOF or an exception - close the stream
+        if dest_addr in self.ssl_streams:
+            del self.ssl_streams[dest_addr]
+            self.establish_ssl_stream_parklot[dest_addr].unpark()
+            await stream.aclose()
+        return False
 
     async def _receive_from_replica(self, dest_addr, replicas_addr, required_replies, cancel_scope):
         """
@@ -475,12 +482,15 @@ class TcpTlsClient(BftClient):
 
     async def __aexit__(self, *args):
         """async context manager method for 'with' statements"""
+        self.exit_flag = True
         for lot in self.establish_ssl_stream_parklot.values():
-            if lot:
+            #if lot:
                 #print(f"unpark 6! {self.client_id}")
-                lot.unpark()
-        self.exit_flag = False
-        for stream in self.ssl_streams.values():
+            lot.unpark()
+        remove = [ k for k in self.ssl_streams ]
+        for k in remove:
+            stream = self.ssl_streams[k]
+            del self.ssl_streams[k]
             await stream.aclose()
 
     def _process_received_msg_err(self, exception):
