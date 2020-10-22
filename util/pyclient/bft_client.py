@@ -370,32 +370,29 @@ class TcpTlsClient(BftClient):
         dest_addr = (dest_replica.ip, dest_replica.port)
         # initial state of the event should be True, we want to connect
         while not self.exit_flag:
-            try:
+            with trio.move_on_after(1.0):
                 try:
                     assert dest_addr not in self.ssl_streams
-                except:
-                    print("got")
-                # Open TCP stream and connect to server
-                tcp_stream = await trio.open_tcp_stream(str(dest_replica.ip), int(dest_replica.port))
-                # Wrap this stream with SSL stream, pass server_hostname to be verified
-                ssl_stream = trio.SSLStream(tcp_stream, ssl_context, server_hostname=server_hostname, https_compatible=False)
-                # Wait for handshake to finish (we want to be on the safe side - after this we are sure 
-                # connection is open)
-                await ssl_stream.do_handshake()
-                # Success! keep stream in dictionary and break out
-                if not self.exit_flag:
-                    self.ssl_streams[dest_addr] = ssl_stream
-                else:
-                    await ssl_stream.aclose()
-                    break
-                # park the task till we it is woken by unpark()
-                #print(f"connected! before park: {self.client_id} {dest_replica.id}")
-                await lot.park()
-                #print(f"connected! after park: {self.client_id} {dest_replica.id}")
-            except (OSError, trio.BrokenResourceError):
-                await trio.sleep(0.1)
-                #print(f"retry connect! {self.client_id} {dest_replica.id}")
-            continue
+                    # Open TCP stream and connect to server
+                    tcp_stream = await trio.open_tcp_stream(str(dest_replica.ip), int(dest_replica.port))
+                    # Wrap this stream with SSL stream, pass server_hostname to be verified
+                    ssl_stream = trio.SSLStream(tcp_stream, ssl_context, server_hostname=server_hostname, https_compatible=False)
+                    # Wait for handshake to finish (we want to be on the safe side - after this we are sure 
+                    # connection is open)
+                    await ssl_stream.do_handshake()
+                    # Success! keep stream in dictionary and break out
+                    if not self.exit_flag:
+                        self.ssl_streams[dest_addr] = ssl_stream
+                    else:
+                        await ssl_stream.aclose()
+                        break
+                    # park the task till we it is woken by unpark()
+                    #print(f"connected! before park: {self.client_id} {dest_replica.id}")
+                    await lot.park()
+                    #print(f"connected! after park: {self.client_id} {dest_replica.id}")
+                except (OSError, trio.BrokenResourceError):
+                    await trio.sleep(0.1)
+                    #print(f"retry connect! {self.client_id} {dest_replica.id}")
 
     async def _send_data(self, data, dest_replica):
         """ Try to send data to dest_replica. On exception - close the SSL stream. """
@@ -423,7 +420,7 @@ class TcpTlsClient(BftClient):
             return False
 
     async def _stream_recv_some(self, out_data, dest_addr, stream, num_bytes):
-        """ Try to receive data from replica. On failure - close the SSL stream. Return true if got at least 1 byte """
+        """ Try to receive data from replica. On failure - close the SSL stream. Return True if got at least 1 byte """
         try:
             data = await stream.receive_some(num_bytes)
             if len(data) > 0:

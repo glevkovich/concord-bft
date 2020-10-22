@@ -191,14 +191,14 @@ class BftTestNetwork:
     async def __aexit__(self, etype, value, tb):
         """context manager method for 'with' statements"""
         if not self.is_existing:
+            os.chdir(self.origdir)
+            shutil.rmtree(self.testdir, ignore_errors=True)
             for client in self.clients.values():
                 await client.__aexit__()
             for client in self.reserved_clients.values():
                 await client.__aexit__()
             self.metrics.__exit__()
             await self.stop_all_replicas()
-            os.chdir(self.origdir)
-            shutil.rmtree(self.testdir, ignore_errors=True)
 
     def __init__(self, is_existing, origdir,
                  config, testdir, builddir, toolsdir,
