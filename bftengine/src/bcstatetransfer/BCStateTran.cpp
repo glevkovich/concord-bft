@@ -2437,66 +2437,6 @@ void BCStateTran::SetAggregator(std::shared_ptr<concordMetrics::Aggregator> aggr
   metrics_component_.SetAggregator(aggregator);
 }
 
-//////////////////////////////////////////////////////////////////////////////
-// BCStateTran::Throughput member functions
-//////////////////////////////////////////////////////////////////////////////
-
-void BCStateTran::Throughput::start() {
-  started_ = true;
-  overall_stats_.reset();
-  if (num_reports_per_window_ > 0ul) {
-    current_window_stats_.reset();
-  }
-}
-
-bool BCStateTran::Throughput::report(uint64_t items_processed) {
-  ConcordAssert(started_);
-
-  ++reports_counter_;
-  overall_stats_.results_.num_processed_items_ += items_processed;
-
-  if (num_reports_per_window_ > 0ul) {
-    current_window_stats_.results_.num_processed_items_ += items_processed;
-    if ((reports_counter_ % num_reports_per_window_) == 0ul) {
-      // Calculate throughput every num_reports_per_window_ reports
-      previous_window_stats_ = current_window_stats_;
-      previous_window_index_ = (reports_counter_ - 1) / num_reports_per_window_;
-      current_window_stats_.reset();
-      previous_window_stats_.calcThroughput();
-      overall_stats_.calcThroughput();
-      prev_win_calculated_ = true;
-      return true;
-    }
-  }
-
-  return false;
-}
-
-const BCStateTran::Throughput::Results &BCStateTran::Throughput::getOverallResults() {
-  if (!prev_win_calculated_) {
-    ConcordAssert(started_);
-    overall_stats_.calcThroughput();
-    return overall_stats_.results_;
-  }
-  return overall_stats_.results_;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-// BCStateTran::Throughput::Stats member functions
-//////////////////////////////////////////////////////////////////////////////
-
-void BCStateTran::Throughput::Stats::reset() {
-  results_.num_processed_items_ = 0ull;
-  results_.throughput_ = 0ull;
-  start_time_ = std::chrono::steady_clock::now();
-}
-
-void BCStateTran::Throughput::Stats::calcThroughput() {
-  auto duration = std::chrono::steady_clock::now() - start_time_;
-  results_.elapsed_time_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-  results_.throughput_ = static_cast<uint64_t>((1000 * results_.num_processed_items_) / results_.elapsed_time_ms_);
-}
-
 }  // namespace impl
 }  // namespace bcst
 }  // namespace bftEngine
