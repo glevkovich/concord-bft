@@ -22,6 +22,7 @@
 #include <string>
 #include <array>
 #include <cstdint>
+#include <optional>
 
 #include "Logger.hpp"
 #include "SimpleBCStateTransfer.hpp"
@@ -34,6 +35,7 @@
 #include "SourceSelector.hpp"
 #include "callback_registry.hpp"
 #include "Handoff.hpp"
+#include "SysConsts.hpp"
 
 using std::set;
 using std::map;
@@ -400,6 +402,80 @@ class BCStateTran : public IStateTransfer {
   mutable Metrics metrics_;
 
   concord::util::CallbackRegistry<uint64_t> on_transferring_complete_cb_registry_;
+
+  ///////////////////////////////////////////////////////////////////////////
+  // Internal Stats
+  ///////////////////////////////////////////////////////////////////////////
+ protected:
+  /**
+   * A Throughput object is used to calculate the number of items processed in a time unit.
+   * After construction, it must be started by calling start(). In order to get meaningul statistics, user should
+   * report periodically to the object on the processing progress by calling report().
+   *
+   * If the user supplies a window_size > 0:
+   * 1) User may call all member functions prefixed with getPrevWin*.
+   * 2) Last window throughput is calculated and saved.
+   * 3) Overall and last window calculations are based on the window's end time.
+   * 4) report() returns true when the window's end reached.
+   *
+   * To get overall and/or last window statistics, the user has 2 options:
+   * 1) If window_size > 0, it should waits until report() returns true and then it may call getOverallResults()
+   * and/or getPrevWinResults().
+   * 2) If window_size is 0, user can call at any time for getOverallResults(). Calling report() to continue collecting
+   * statistics is still possible after.
+   */
+  class Throughput {
+   public:
+    Throughput(uint32_t window_size = 0ul) : num_reports_per_window_(window_size) {}
+
+    struct Results {
+      uint64_t elapsed_time_ms_;
+      uint64_t throughput_ = 0ull;  // items per sec
+      uint64_t num_processed_items_ = 0ull;
+    };
+
+    void start();
+    // Returns true if reached the end of a summary window, and started a new window
+    bool report(uint64_t items_processed = 1);
+    const Results& getOverallResults();
+    const Results& getPrevWinResults() {
+      ConcordAssert(prev_win_calculated_);
+      return previous_window_stats_.results_;
+    }
+    uint64_t getPrevWinIndex() const {
+      ConcordAssert(prev_win_calculated_);
+      return previous_window_index_;
+    }
+
+   protected:
+    class Stats {
+      std::chrono::time_point<std::chrono::steady_clock> start_time_;
+
+     public:
+      Results results_;
+
+      void reset();
+      void calcThroughput();
+    };
+
+    const uint32_t num_reports_per_window_;
+    bool started_ = false;
+    bool prev_win_calculated_ = false;
+    Stats overall_stats_;
+    Stats current_window_stats_;
+    Stats previous_window_stats_;
+    uint64_t previous_window_index_;
+    uint64_t reports_counter_ = 0;
+  };  // class Throughput
+
+  static constexpr uint32_t get_missing_blocks_summary_window_size = checkpointWindowSize;
+  Throughput blocks_collected_;
+  Throughput bytes_collected_;
+  std::optional<uint64_t> first_collected_block_num_;
+
+  // used to print periodic summary of recent checkpoints, and collected date while in state GettingMissingBlocks
+  void logGettingMissingBlocksSummary(const uint64_t firstRequiredBlock);
+  void startCollectingStats();
 };
 
 }  // namespace bftEngine::bcst::impl

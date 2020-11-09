@@ -211,7 +211,9 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
           metrics_component_.RegisterCounter("start_collecting_state"),
           metrics_component_.RegisterCounter("on_timer"),
           metrics_component_.RegisterCounter("on_transferring_complete"),
-      } {
+      },
+      blocks_collected_(get_missing_blocks_summary_window_size),
+      bytes_collected_(get_missing_blocks_summary_window_size) {
   ConcordAssertNE(stateApi, nullptr);
   ConcordAssertGE(replicas_.size(), 3U * config_.fVal + 1U);
   ConcordAssertEQ(replicas_.count(config_.myReplicaId), 1);
@@ -286,6 +288,10 @@ void BCStateTran::init(uint64_t maxNumOfRequiredStoredCheckpoints,
 
       FetchingState fs = getFetchingState();
       LOG_INFO(getLogger(), "Starting state is " << stateName(fs));
+
+      if (fs == FetchingState::GettingMissingBlocks) {
+        startCollectingStats();
+      }
 
       if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages) {
         SetAllReplicasAsPreferred();
@@ -589,12 +595,19 @@ void BCStateTran::zeroReservedPage(uint32_t reservedPageId) {
   psd_->setPendingResPage(reservedPageId, buffer_, config_.sizeOfReservedPage);
 }
 
+void BCStateTran::startCollectingStats() {
+  blocks_collected_.start();
+  bytes_collected_.start();
+  first_collected_block_num_ = {};
+}
+
 void BCStateTran::startCollectingState() {
   LOG_INFO(getLogger(), "");
 
   ConcordAssert(running_);
   ConcordAssert(!isFetching());
   metrics_.start_collecting_state_.Get().Inc();
+  startCollectingStats();
 
   verifyEmptyInfoAboutGettingCheckpointSummary();
   {  // txn scope
@@ -1935,6 +1948,45 @@ void BCStateTran::EnterGettingCheckpointSummariesState() {
   sendAskForCheckpointSummariesMsg();
 }
 
+void BCStateTran::logGettingMissingBlocksSummary(const uint64_t firstRequiredBlock) {
+  std::ostringstream oss;
+  const DataStore::CheckpointDesc fetched_cp = psd_->getCheckpointBeingFetched();
+  auto blocks_overall_r = blocks_collected_.getOverallResults();
+  auto bytes_overall_r = bytes_collected_.getOverallResults();
+
+  oss << "--GettingMissingBlocks Status Dump--"
+      << " Overall stats:["
+      << "Collect range: (" << firstRequiredBlock << ", " << first_collected_block_num_.value() << ")"
+      << " ,Last collected block: " << nextRequiredBlock_
+      << " ,Blocks left: " << (nextRequiredBlock_ - firstRequiredBlock)
+      << " ,Elapsed time: " << blocks_overall_r.elapsed_time_ms_ << " ms"
+      << " ,Collected: (" << blocks_overall_r.num_processed_items_ << " blk, " << bytes_overall_r.num_processed_items_
+      << " B)"
+      << " ,Throughput: (" << blocks_overall_r.throughput_ << " blk/s, " << bytes_overall_r.throughput_ << " B/s)"
+      << "], ";
+
+  if (get_missing_blocks_summary_window_size > 0) {
+    auto blocks_win_r = blocks_collected_.getPrevWinResults();
+    auto bytes_win_r = bytes_collected_.getPrevWinResults();
+    auto prev_win_index = blocks_collected_.getPrevWinIndex();
+
+    oss << "Last window:["
+        << "Index: " << prev_win_index << " ,Elapsed time: " << blocks_win_r.elapsed_time_ms_ << " ms"
+        << " ,Collected: (" << blocks_win_r.num_processed_items_ << " blk, " << bytes_win_r.num_processed_items_
+        << " B)"
+        << " ,Throughput: (" << blocks_win_r.throughput_ << " blk/s, " << bytes_win_r.throughput_ << " B/s)"
+        << "], ";
+  }
+
+  oss << " Checkpoint info: ["
+      << "Last stored: " << psd_->getLastStoredCheckpoint()
+      << " , Being fetched: (checkpointNum: " << fetched_cp.checkpointNum << ", lastBlock: " << fetched_cp.lastBlock
+      << ")"
+      << "]" << std::endl;
+
+  LOG_INFO(getLogger(), oss.str().c_str());
+}
+
 void BCStateTran::processData() {
   const FetchingState fs = getFetchingState();
   const auto fetchingState = fs;
@@ -1999,6 +2051,7 @@ void BCStateTran::processData() {
           as_->getPrevDigestFromBlock(nextRequiredBlock_ + 1,
                                       reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
         }
+        if (!first_collected_block_num_) first_collected_block_num_ = nextRequiredBlock_;
       }
     }
 
@@ -2049,8 +2102,10 @@ void BCStateTran::processData() {
 
       ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
 
-      memset(buffer_, 0, actualBlockSize);
       const uint64_t firstRequiredBlock = g.txn()->getFirstRequiredBlock();
+      bytes_collected_.report(actualBlockSize);
+      if (blocks_collected_.report()) logGettingMissingBlocksSummary(firstRequiredBlock);
+      memset(buffer_, 0, actualBlockSize);
 
       if (firstRequiredBlock < nextRequiredBlock_) {
         as_->getPrevDigestFromBlock(nextRequiredBlock_,
@@ -2380,6 +2435,66 @@ STDigest BCStateTran::getBlockAndComputeDigest(uint64_t currBlock) {
 
 void BCStateTran::SetAggregator(std::shared_ptr<concordMetrics::Aggregator> aggregator) {
   metrics_component_.SetAggregator(aggregator);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// BCStateTran::Throughput member functions
+//////////////////////////////////////////////////////////////////////////////
+
+void BCStateTran::Throughput::start() {
+  started_ = true;
+  overall_stats_.reset();
+  if (num_reports_per_window_ > 0ul) {
+    current_window_stats_.reset();
+  }
+}
+
+bool BCStateTran::Throughput::report(uint64_t items_processed) {
+  ConcordAssert(started_);
+
+  ++reports_counter_;
+  overall_stats_.results_.num_processed_items_ += items_processed;
+
+  if (num_reports_per_window_ > 0ul) {
+    current_window_stats_.results_.num_processed_items_ += items_processed;
+    if ((reports_counter_ % num_reports_per_window_) == 0ul) {
+      // Calculate throughput every num_reports_per_window_ reports
+      previous_window_stats_ = current_window_stats_;
+      previous_window_index_ = (reports_counter_ - 1) / num_reports_per_window_;
+      current_window_stats_.reset();
+      previous_window_stats_.calcThroughput();
+      overall_stats_.calcThroughput();
+      prev_win_calculated_ = true;
+      return true;
+    }
+  }
+
+  return false;
+}
+
+const BCStateTran::Throughput::Results &BCStateTran::Throughput::getOverallResults() {
+  if (!prev_win_calculated_) {
+    ConcordAssert(started_);
+    overall_stats_.calcThroughput();
+    return overall_stats_.results_;
+  }
+  return overall_stats_.results_;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// BCStateTran::Throughput::Stats member functions
+//////////////////////////////////////////////////////////////////////////////
+
+void BCStateTran::Throughput::Stats::reset() {
+  results_.num_processed_items_ = 0ull;
+  results_.throughput_ = 0ull;
+  start_time_ = std::chrono::steady_clock::now();
+}
+
+void BCStateTran::Throughput::Stats::calcThroughput() {
+  auto duration = std::chrono::steady_clock::now() - start_time_;
+  results_.elapsed_time_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+  results_.throughput_ = static_cast<uint64_t>((1000 * results_.num_processed_items_) / results_.elapsed_time_ms_);
 }
 
 }  // namespace impl
