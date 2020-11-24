@@ -932,6 +932,7 @@ void BCStateTran::sendAskForCheckpointSummariesMsg() {
   lastTimeSentAskForCheckpointSummariesMsg = getMonotonicTimeMilli();
   lastMsgSeqNum_ = uniqueMsgSeqNum();
   metrics_.last_msg_seq_num_.Get().Set(lastMsgSeqNum_);
+  msg_latency_tracker_.emplace(lastMsgSeqNum_, lastTimeSentAskForCheckpointSummariesMsg);
 
   msg.msgSeqNum = lastMsgSeqNum_;
   msg.minRelevantCheckpointNum = psd_->getLastStoredCheckpoint() + 1;
@@ -963,7 +964,9 @@ void BCStateTran::sendFetchBlocksMsg(uint64_t firstRequiredBlock,
                   msg.lastRequiredBlock,
                   msg.lastKnownChunkInLastRequiredBlock));
 
-  sourceSelector_.setSendTime(getMonotonicTimeMilli());
+  uint64_t now = getMonotonicTimeMilli();
+  sourceSelector_.setSendTime(now);
+  msg_latency_tracker_.emplace(lastMsgSeqNum_, now);
   replicaForStateTransfer_->sendStateTransferMessage(
       reinterpret_cast<char *>(&msg), sizeof(FetchBlocksMsg), sourceSelector_.currentReplica());
 }
@@ -992,7 +995,9 @@ void BCStateTran::sendFetchResPagesMsg(int16_t lastKnownChunkInLastRequiredBlock
                   msg.requiredCheckpointNum,
                   msg.lastKnownChunk));
 
-  sourceSelector_.setSendTime(getMonotonicTimeMilli());
+  uint64_t now = getMonotonicTimeMilli();
+  msg_latency_tracker_.emplace(lastMsgSeqNum_, now);
+  sourceSelector_.setSendTime(now);
   replicaForStateTransfer_->sendStateTransferMessage(
       reinterpret_cast<char *>(&msg), sizeof(FetchResPagesMsg), sourceSelector_.currentReplica());
 }
@@ -1088,6 +1093,14 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
                  replicaId, msgLen, m->checkpointNum, m->digestOfResPagesDescriptor.isZero(), m->requestMsgSeqNum));
     metrics_.invalid_checkpoint_summary_msg_.Get().Inc();
     return false;
+  }
+
+  // record latency
+  auto iter = msg_latency_tracker_.find(m->requestMsgSeqNum);
+  if (iter != msg_latency_tracker_.end()) {
+    uint64_t latency = getMonotonicTimeMilli() - iter->second;
+    msg_latency_tracker_.erase(m->requestMsgSeqNum);
+    histograms_.ask_for_checkpoint_summaries_msg_latency.get()->record(latency);
   }
 
   // if msg is not relevant
@@ -1533,6 +1546,17 @@ bool BCStateTran::onMessage(const ItemDataMsg *m, uint32_t msgLen, uint16_t repl
                                          m->dataSize));
     metrics_.invalid_item_data_msg_.Get().Inc();
     return false;
+  }
+
+  // record latency
+  auto iter = msg_latency_tracker_.find(m->requestMsgSeqNum);
+  if (iter != msg_latency_tracker_.end()) {
+    uint64_t latency = getMonotonicTimeMilli() - iter->second;
+    msg_latency_tracker_.erase(m->requestMsgSeqNum);
+    if (getFetchingState() == FetchingState::GettingMissingResPages)
+      histograms_.fetch_res_pages_msg_latency.get()->record(latency);
+    else
+      histograms_.fetch_blocks_msg_latency.get()->record(latency);
   }
 
   //  const DataStore::CheckpointDesc fcp = psd_->getCheckpointBeingFetched();
@@ -2209,6 +2233,11 @@ void BCStateTran::processData() {
       metrics_.checkpoint_being_fetched_.Get().Set(0);
 
       checkConsistency(config_.pedanticChecks);
+
+      // Log latencies
+      auto &registrar = concord::diagnostics::RegistrarSingleton::getInstance();
+      registrar.perf.snapshot("state_transfer");
+      LOG_INFO(getLogger(), registrar.perf.toString(registrar.perf.get("state_transfer")));
 
       // Completion
       LOG_INFO(getLogger(),
