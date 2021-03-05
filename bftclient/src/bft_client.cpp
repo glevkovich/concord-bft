@@ -12,10 +12,48 @@
 #include "bftclient/bft_client.h"
 #include "bftengine/ClientMsgs.hpp"
 #include "assertUtils.hpp"
+#include "secrets_manager_enc.h"
+#include "secrets_manager_plain.h"
 
 using namespace concord::diagnostics;
+using namespace concord::secretsmanager;
 
 namespace bft::client {
+
+Client::Client(std::unique_ptr<bft::communication::ICommunication> comm, const ClientConfig& config)
+    : communication_(std::move(comm)),
+      config_(config),
+      quorum_converter_(config_.all_replicas, config_.f_val, config_.c_val),
+      expected_commit_time_ms_(config_.retry_timeout_config.initial_retry_timeout.count(),
+                               config_.retry_timeout_config.number_of_standard_deviations_to_tolerate,
+                               config_.retry_timeout_config.max_retry_timeout.count(),
+                               config_.retry_timeout_config.min_retry_timeout.count(),
+                               config_.retry_timeout_config.samples_per_evaluation,
+                               config_.retry_timeout_config.samples_until_reset,
+                               config_.retry_timeout_config.max_increasing_factor,
+                               config_.retry_timeout_config.max_decreasing_factor),
+      metrics_(config.id),
+      histograms_(std::unique_ptr<Recorders>(new Recorders(config.id))) {
+  communication_->setReceiver(config_.id.val, &receiver_);
+  communication_->Start();
+  if (config.transaction_signing_private_key_file_path_) {
+    // transaction signing is enabled
+    auto file_path = config.transaction_signing_private_key_file_path_.value();
+    std::optional<std::string> key_plaintext;
+
+    if (config.secrets_manager_config_) {
+      // private key file is encrypted, to decrypt it we need to use the secrets manager enc
+      SecretsManagerEnc sme(config.secrets_manager_config_.value());
+      key_plaintext = sme.decryptFile(file_path);
+    } else {
+      // private key file is in plain text, use seccrets manager plain to read the file
+      SecretsManagerPlain smp;
+      key_plaintext = smp.decryptFile(file_path);
+    }
+    if (!key_plaintext) throw BadPrivateKeyException(file_path, config.secrets_manager_config_ != std::nullopt);
+    transaction_signer_ = bftEngine::impl::RSASigner(key_plaintext.value());
+  }
+}
 
 Msg Client::makeClientMsg(const RequestConfig& config, Msg&& request, bool read_only, uint16_t client_id) {
   uint8_t flags = read_only ? READ_ONLY_REQ : EMPTY_FLAGS_REQ;
@@ -59,7 +97,8 @@ Msg Client::makeClientMsg(const RequestConfig& config, Msg&& request, bool read_
 
   if (transaction_signer_) {
     // Sign the request data, add the signature at the end of the request
-    TimeRecorder scoped_timer(*histograms_.sign_duration);
+    histograms_->sign_duration;
+    TimeRecorder scoped_timer(*histograms_->sign_duration);
     size_t actualSigSize = 0;
     position += config.correlation_id.size();
     transaction_signer_->sign(reinterpret_cast<const char*>(request.data()),

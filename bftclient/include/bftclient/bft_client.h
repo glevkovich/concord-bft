@@ -32,26 +32,7 @@ namespace bft::client {
 
 class Client {
  public:
-  Client(std::unique_ptr<bft::communication::ICommunication> comm, const ClientConfig& config)
-      : communication_(std::move(comm)),
-        config_(config),
-        quorum_converter_(config_.all_replicas, config_.f_val, config_.c_val),
-        expected_commit_time_ms_(config_.retry_timeout_config.initial_retry_timeout.count(),
-                                 config_.retry_timeout_config.number_of_standard_deviations_to_tolerate,
-                                 config_.retry_timeout_config.max_retry_timeout.count(),
-                                 config_.retry_timeout_config.min_retry_timeout.count(),
-                                 config_.retry_timeout_config.samples_per_evaluation,
-                                 config_.retry_timeout_config.samples_until_reset,
-                                 config_.retry_timeout_config.max_increasing_factor,
-                                 config_.retry_timeout_config.max_decreasing_factor),
-        metrics_(config.id) {
-    communication_->setReceiver(config_.id.val, &receiver_);
-    communication_->Start();
-    if (config.transaction_signing_private_key_full_path_) {
-      auto full_path = config.transaction_signing_private_key_full_path_.value();
-      transaction_signer_ = bftEngine::impl::RSASigner(full_path);
-    }
-  }
+  Client(std::unique_ptr<bft::communication::ICommunication> comm, const ClientConfig& config);
 
   void setAggregator(const std::shared_ptr<concordMetrics::Aggregator>& aggregator) {
     metrics_.setAggregator(aggregator);
@@ -120,15 +101,23 @@ class Client {
   // 1 second
   static constexpr int64_t MAX_VALUE_NANOSECONDS = 1000 * 1000 * 1000;
   struct Recorders {
-    Recorders() {
+    using Recorder = concord::diagnostics::Recorder;
+    Recorders(ClientId client_id) : component_name_("bft_client_" + client_id.val) {
       auto& registrar = concord::diagnostics::RegistrarSingleton::getInstance();
-      registrar.perf.registerComponent("participant", {sign_duration});
+      registrar.perf.registerComponent(component_name_, {sign_duration});
+    }
+    DEFINE_SHARED_RECORDER(sign_duration, 1, MAX_VALUE_NANOSECONDS, 3, concord::diagnostics::Unit::NANOSECONDS);
+
+    ~Recorders() {
+      auto& registrar = concord::diagnostics::RegistrarSingleton::getInstance();
+      registrar.perf.unRegisterComponent(component_name_);
     }
 
-    DEFINE_SHARED_RECORDER(sign_duration, 1, MAX_VALUE_NANOSECONDS, 3, concord::diagnostics::Unit::NANOSECONDS);
+   private:
+    std::string component_name_;
   };
 
-  Recorders histograms_;
+  std::unique_ptr<Recorders> histograms_;
 };
 
 }  // namespace bft::client

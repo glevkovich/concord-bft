@@ -37,9 +37,9 @@ class CryptographyWrapper {
 
 class RSASigner {
  public:
-  RSASigner(const char* privteKey, const char* randomSeed);
-  RSASigner(const char* privateKey);
-  RSASigner(const std::string& privateKeyPath);
+  explicit RSASigner(const char* privteKey, const char* randomSeed);
+  explicit RSASigner(const char* privateKey);
+  explicit RSASigner(const std::string& private_key_pem);
   RSASigner(const RSASigner&) = delete;
   RSASigner(RSASigner&&);
   ~RSASigner();

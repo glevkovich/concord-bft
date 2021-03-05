@@ -19,6 +19,7 @@
 #pragma GCC diagnostic pop
 
 #include "Crypto.hpp"
+#include "secrets_manager_enc.h"
 
 #define VERIFY(exp)                                                                                            \
   {                                                                                                            \
@@ -36,6 +37,7 @@
 
 using namespace CryptoPP;
 using namespace std;
+using namespace concord::secretsmanager;
 
 #if defined MD5_DIGEST
 #include <cryptopp/md5.h>
@@ -187,10 +189,10 @@ RSASigner::RSASigner(const char* privateKey) {
   impl = std::make_unique<Impl>(s);
 }
 
-RSASigner::RSASigner(const std::string& privateKeyPath) {
-  FileSource fs(privateKeyPath.c_str(), true);
+RSASigner::RSASigner(const std::string& private_key_pem) {
+  StringSource ss(private_key_pem, true);
   RSA::PrivateKey priv_key;
-  PEM_Load(fs, priv_key);
+  PEM_Load(ss, priv_key);
   impl = std::make_unique<Impl>(priv_key);
 }
 

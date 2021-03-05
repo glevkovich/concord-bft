@@ -15,6 +15,7 @@ target_include_directories(bftclient_new PUBLIC src)
 target_include_directories(bftclient_new PUBLIC ../bftengine/src)
 target_include_directories(bftclient_new PUBLIC ../threshsign/include)
 target_include_directories(bftclient_new PUBLIC ../diagnostics/include)
+target_include_directories(bftclient_new PUBLIC ../secretsmanager/include)
 target_link_libraries(bftclient_new PUBLIC 
     bftcommunication 
     bftheaders

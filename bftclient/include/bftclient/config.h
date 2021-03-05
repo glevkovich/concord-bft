@@ -21,6 +21,7 @@
 
 #include "bftclient/base_types.h"
 #include "bftclient/quorums.h"
+#include "secret_data.h"
 
 using namespace std::chrono_literals;
 
@@ -64,7 +65,8 @@ struct ClientConfig {
   uint16_t f_val;
   uint16_t c_val;
   RetryTimeoutConfig retry_timeout_config;
-  std::optional<std::string> transaction_signing_private_key_full_path_;
+  std::optional<std::string> transaction_signing_private_key_file_path_ = std::nullopt;
+  std::optional<concord::secretsmanager::SecretData> secrets_manager_config_ = std::nullopt;
 };
 
 // Generic per-request configuration shared by reads and writes.

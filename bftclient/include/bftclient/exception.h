@@ -43,4 +43,11 @@ class TimeoutException : public BftClientException {
                            ", and correlation id: " + cid) {}
 };
 
+class BadPrivateKeyException : public BftClientException {
+ public:
+  BadPrivateKeyException(std::string& file_path, bool encrypted)
+      : BftClientException("Failed to retrive transaction signing private key, path: " + file_path +
+                           ", is_encrypted: " + std::to_string(encrypted)) {}
+};
+
 }  // namespace bft::client
