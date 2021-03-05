@@ -39,6 +39,7 @@ class RSASigner {
  public:
   RSASigner(const char* privteKey, const char* randomSeed);
   RSASigner(const char* privateKey);
+  RSASigner(const std::string& privateKeyPath);
   RSASigner(const RSASigner&) = delete;
   RSASigner(RSASigner&&);
   ~RSASigner();
@@ -60,6 +61,7 @@ class RSAVerifier {
  public:
   RSAVerifier(const char* publicKey, const char* randomSeed);
   RSAVerifier(const char* publicKey);
+  RSAVerifier(const std::string& publicKeyPath);
   RSAVerifier(const RSAVerifier&) = delete;
   RSAVerifier(RSAVerifier&&);
   ~RSAVerifier();
