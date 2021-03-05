@@ -64,7 +64,7 @@ struct ClientConfig {
   uint16_t f_val;
   uint16_t c_val;
   RetryTimeoutConfig retry_timeout_config;
-  std::optional<const std::string> transaction_signing_private_key_full_path_;
+  std::optional<std::string> transaction_signing_private_key_full_path_;
 };
 
 // Generic per-request configuration shared by reads and writes.
