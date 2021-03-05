@@ -13,16 +13,13 @@
 #include "bftengine/ClientMsgs.hpp"
 #include "assertUtils.hpp"
 
+using namespace concord::diagnostics;
+
 namespace bft::client {
 
-// This function creates a ClientRequestMsg or a ClientPreProcessRequestMsg depending upon config.
-//
-// Since both of these are just instances of a `ClientRequestMsgHeader` followed by the message
-// data, we construct them here, rather than relying on the type constructors embedded into the
-// bftEngine impl. This allows us to not have to link with the bftengine library, and also allows us
-// to return the messages as vectors with proper RAII based memory management.
-Msg makeClientMsg(const RequestConfig& config, Msg&& request, bool read_only, uint16_t client_id) {
+Msg Client::makeClientMsg(const RequestConfig& config, Msg&& request, bool read_only, uint16_t client_id) {
   uint8_t flags = read_only ? READ_ONLY_REQ : EMPTY_FLAGS_REQ;
+  size_t expected_sig_len = 0;
   if (config.pre_execute) {
     flags |= PRE_PROCESS_REQ;
   }
@@ -31,8 +28,12 @@ Msg makeClientMsg(const RequestConfig& config, Msg&& request, bool read_only, ui
   }
 
   auto header_size = sizeof(bftEngine::ClientRequestMsgHeader);
-
-  Msg msg(header_size + request.size() + config.correlation_id.size() + config.span_context.size());
+  auto msg_size = header_size + request.size() + config.correlation_id.size() + config.span_context.size();
+  if (transaction_signer_) {
+    expected_sig_len = transaction_signer_->signatureLength();
+    msg_size += expected_sig_len;
+  }
+  Msg msg(msg_size);
   bftEngine::ClientRequestMsgHeader* header = reinterpret_cast<bftEngine::ClientRequestMsgHeader*>(msg.data());
   header->msgType = config.pre_execute ? PRE_PROCESS_REQUEST_MSG_TYPE : REQUEST_MSG_TYPE;
   header->spanContextSize = config.span_context.size();
@@ -55,6 +56,19 @@ Msg makeClientMsg(const RequestConfig& config, Msg&& request, bool read_only, ui
 
   // Copy the correlation ID
   std::memcpy(position, config.correlation_id.data(), config.correlation_id.size());
+
+  if (transaction_signer_) {
+    // Sign the request data, add the signature at the end of the request
+    TimeRecorder scoped_timer(*histograms_.sign_duration);
+    size_t actualSigSize = 0;
+    position += config.correlation_id.size();
+    transaction_signer_->sign(reinterpret_cast<const char*>(request.data()),
+                              request.size(),
+                              reinterpret_cast<char*>(position),
+                              expected_sig_len,
+                              actualSigSize);
+    ConcordAssert(expected_sig_len == actualSigSize);
+  }
 
   return msg;
 }
