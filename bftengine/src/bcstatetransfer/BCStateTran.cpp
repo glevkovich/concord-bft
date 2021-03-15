@@ -1265,7 +1265,11 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   // compute information about next block and chunk
   uint64_t nextBlock = m->lastRequiredBlock;
   uint32_t sizeOfNextBlock = 0;
+  const std::chrono::time_point<std::chrono::steady_clock> start = std::chrono::steady_clock::now();
   bool tmp = as_->getBlock(nextBlock, buffer_, &sizeOfNextBlock);
+  const auto end = std::chrono::steady_clock::now();
+  LOG_WARN(getLogger(),
+           "***getBlock_duration " << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
   ConcordAssert(tmp);
   ConcordAssertGT(sizeOfNextBlock, 0);
 
@@ -1336,7 +1340,13 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
       nextBlock--;
       LOG_DEBUG(getLogger(), "Start sending next block: " << KVLOG(nextBlock));
       sizeOfNextBlock = 0;
+
+      const std::chrono::time_point<std::chrono::steady_clock> start1 = std::chrono::steady_clock::now();
       bool tmp2 = as_->getBlock(nextBlock, buffer_, &sizeOfNextBlock);
+      const auto end1 = std::chrono::steady_clock::now();
+      LOG_WARN(getLogger(),
+               "***getBlock_duration " << std::chrono::duration_cast<std::chrono::microseconds>(end1 - start1).count());
+
       ConcordAssert(tmp2);
       ConcordAssertGT(sizeOfNextBlock, 0);
 
