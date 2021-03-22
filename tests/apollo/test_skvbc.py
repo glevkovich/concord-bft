@@ -44,6 +44,7 @@ class SkvbcTest(unittest.TestCase):
 
     __test__ = False  # so that PyTest ignores this test scenario
 
+    from util.bft import with_constant_load
     @with_trio
     @with_bft_network(start_replica_cmd, rotate_keys=True)
     async def test_state_transfer(self, bft_network,exchange_keys=True):
@@ -62,7 +63,7 @@ class SkvbcTest(unittest.TestCase):
 
         await skvbc.prime_for_state_transfer(
             stale_nodes={stale_node},
-            checkpoints_num=3, # key-exchange channges the last executed seqnum
+            checkpoints_num=30, # key-exchange channges the last executed seqnum
             persistency_enabled=False
         )
         bft_network.start_replica(stale_node)

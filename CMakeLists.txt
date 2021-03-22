@@ -34,7 +34,7 @@ option(BUILD_COMM_TCP_PLAIN "Enable TCP communication" FALSE)
 option(LEAKCHECK "Enable Address and Leak Sanitizers" FALSE)
 
 # Default THREADCHECK to FALSE
-option(THREADCHECK "Enable Thread Sanitizer" FALSE)
+option(THREADCHECK "Enable Thread Sanitizer" TRUE)
 
 # Default BUILD_COMM_TCP_TLS to FALSE
 option(BUILD_COMM_TCP_TLS "Enable TCP TLS communication" FALSE)

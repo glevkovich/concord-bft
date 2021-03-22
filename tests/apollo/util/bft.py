@@ -74,7 +74,7 @@ def interesting_configs(selected=None):
     if selected is None:
         selected=lambda *config: True
 
-    bft_configs = [{'n': 6, 'f': 1, 'c': 1, 'num_clients': BFT_CONFIGS_NUM_CLIENTS},
+    bft_configs = [#{'n': 6, 'f': 1, 'c': 1, 'num_clients': BFT_CONFIGS_NUM_CLIENTS},
                    {'n': 7, 'f': 2, 'c': 0, 'num_clients': BFT_CONFIGS_NUM_CLIENTS},
                    # {'n': 4, 'f': 1, 'c': 0, 'num_clients': BFT_CONFIGS_NUM_CLIENTS},
                    # {'n': 9, 'f': 2, 'c': 1, 'num_clients': BFT_CONFIGS_NUM_CLIENTS}
@@ -126,7 +126,7 @@ def with_constant_load(async_fn):
                     await skvbc.send_indefinite_write_requests(arg1, arg2)
 
             async with trio.open_nursery() as nursery:
-                constant_load = await nursery.start(background_sender, client, 1)  # send a request every second
+                constant_load = await nursery.start(background_sender, client, 0.1)  # send a request every second
                 await async_fn(*args, **kwargs, bft_network=bft_network, skvbc=skvbc, constant_load=constant_load)
                 nursery.cancel_scope.cancel()
     return wrapper
@@ -480,13 +480,14 @@ class BftTestNetwork:
                     now = datetime.now().strftime("%y-%m-%d_%H:%M:%S")
                     test_name = f"{now}_{self.current_test}"
 
-                self.test_dir = f"{self.builddir}/tests/apollo/logs/{test_name}/{self.current_test}/"
-                test_log = f"{self.test_dir}stdout_{replica_id}.log"
+                test_dir = f"{self.builddir}/tests/apollo/logs/{test_name}/{self.current_test}/"
+                test_log = f"{test_dir}stdout_{replica_id}.log"
+                test_err_log = f"{test_dir}stderr_{replica_id}.log"
 
-                os.makedirs(self.test_dir, exist_ok=True)
+                os.makedirs(test_dir, exist_ok=True)
 
                 stdout_file = open(test_log, 'w+')
-                stderr_file = open(test_log, 'w+')
+                stderr_file = open(test_err_log, 'w+')
 
                 stdout_file.write("############################################\n")
                 stdout_file.flush()
