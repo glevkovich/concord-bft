@@ -301,7 +301,7 @@ class BftClient(ABC):
                 self.primary = self.replicas[header.primary_id]
                 cancel_scope.cancel()
 
-    def _get_txn_signing_priv_key_path(se_pathlf, client_id):
+    def _get_txn_signing_priv_key_path(self, client_id):
         """
         This method finds the correct participant mapped to the given client_id.
         Then it finds the appropriate private key file and returns the read key from it.
@@ -316,11 +316,11 @@ class BftClient(ABC):
         if txn_signing_keys_path and principals_to_participant_map:
             if int(client_id) in principals_to_participant_map:
                 participant = str(principals_to_participant_map[client_id])
-                key_path = os.path.join(txn_signing_keys_path, "transaction_signing_keys", participant, transaction_signing_priv.pem)
+                key_path = os.path.join(txn_signing_keys_path, "transaction_signing_keys", participant, "transaction_signing_priv.pem")
             else:
                 raise AttributeError("Client id {} not found in bft config property principals_to_participant_map".format(client_id))
         # If either one is empty, then throw an error
-        elif not (bool(txn_signing_keys_path) ^ bool(principals_to_participant_map)):
+        elif (bool(txn_signing_keys_path) != bool(principals_to_participant_map)):
             raise AttributeError("Bft configs txn_signing_keys_path and principals_to_participant_map should be set/unset at the same time")
 
         return key_path
