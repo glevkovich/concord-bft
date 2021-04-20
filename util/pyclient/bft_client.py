@@ -91,7 +91,9 @@ class BftClient(ABC):
         self.comm_prepared = False
 
         txn_signing_key_path = self._get_txn_signing_priv_key_path(self.client_id)
-        self.signing_key = RSA.import_key(open(txn_signing_key_path).read()) if txn_signing_key_path else None
+        self.signing_key = None
+        with open(txn_signing_key_path, 'rb') as f:
+            self.signing_key = RSA.import_key(f.read())
 
     @abstractmethod
     def __enter__(self):
