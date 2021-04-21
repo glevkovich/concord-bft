@@ -42,12 +42,12 @@
 #include "messages/ReplicaAsksToLeaveViewMsg.hpp"
 #include "CryptoManager.hpp"
 #include "ControlHandler.hpp"
+#include "KeyExchangeManager.h"
 
 #include <memory>
 #include <string>
 #include <type_traits>
 #include <bitset>
-#include "KeyExchangeManager.h"
 
 #define getName(var) #var
 

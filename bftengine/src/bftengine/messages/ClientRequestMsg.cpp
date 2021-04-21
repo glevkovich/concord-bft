@@ -143,8 +143,9 @@ void ClientRequestMsg::validateRequestSignature(const ReplicasInfo& repInfo) con
   std::stringstream msg;
 
   // We validate request's signature only from external clients
-  if (repInfo.isIdOfExternalClient(senderId)) {
-    msg << "Signature is given but senderId " << senderId << " is not a valid id of an externa bft-client!";
+  if (!repInfo.isIdOfExternalClient(senderId)) {
+    msg << "Signature verification failed for " << KVLOG(senderId)
+        << ", it is not a valid id of an externa bft-client!";
     LOG_ERROR(GL, msg.str());
     throw ClientSignatureVerificationFailedException(msg.str());
   }
