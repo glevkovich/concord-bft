@@ -241,7 +241,7 @@ class BftTestNetwork:
         self.test_dir = None
         self.test_start_time = None
         self.perf_proc = None
-        self.txn_signing_enabled = True if os.environ.get('TXN_SIGNING_ENABLED', "").lower() == "true" else False
+        self.txn_signing_enabled = (os.environ.get('TXN_SIGNING_ENABLED', "").lower() == "true")
         # Setup transaction signing parameters
         self.setup_txn_signing()
 
@@ -427,18 +427,19 @@ class BftTestNetwork:
         self.principals_to_participant_map = {}
         if self.txn_signing_enabled:
             self.txn_signing_keys_base_path = tempfile.mkdtemp()
-            self.generate_txn_signing_keys(self.txn_signing_keys_base_path)
             self.principals_mapping, self.principals_to_participant_map = self.create_principals_mapping()
-
+            self.generate_txn_signing_keys(self.txn_signing_keys_base_path)
+            
     def generate_txn_signing_keys(self, keys_path):
         """ Generates num_participants number of key pairs """
         script_path = "/concord-bft/scripts/linux/create_concord_clients_transaction_signing_keys.sh"
-        args = [script_path, "-n", str(NUM_PARTICIPANTS), "-o", keys_path]
+        args = [script_path, "-n", str(self.num_participants), "-o", keys_path]
         subprocess.run(args, check=True, stdout=subprocess.DEVNULL)
 
     def create_principals_mapping(self):
         """
-        If client principal ids range from 11-20, for example, this method splits them into groups based on NUM_PARTICIPANTS.
+        If client principal ids range from 11-20, for example, this method splits them into groups based on 
+        NUM_PARTICIPANTS and self.num_participants.
         Client ids in each group will be space separated, and each group will be semicolon separated. 
         E.g. "11 12;13 14;15 16;17 18;19 20" for 10 client ids divided into 5 participants.
         If there are reserved clients, they are added at the end of the group in round robin manner.
@@ -446,6 +447,8 @@ class BftTestNetwork:
         "11 12 21;13 14 22;15 16;17 18,19 20".
         This method also returns a principals to participants map, with the key being the principal id
         of the client or reserved client, and the value being the participant it belongs to (numbered 1 onwards).
+        if number of clients is not default, but modified from outside, there might be cases where self.num_participants
+        will be less than NUM_PARTICIPANTS.
         """
         def split(a, n):
             """ Splits list 'a' into n chunks """
@@ -458,8 +461,6 @@ class BftTestNetwork:
         reserved_client_ids = range(start_id, start_id + RESERVED_CLIENTS_QUOTA)
 
         principals = ""
-        print(f"self.clients={self.clients}")
-        print(f"self.reserved_clients={self.reserved_clients}")
         client_ids = sorted(client_ids)
         print("client_ids={}".format(client_ids))
         reserved_client_ids = sorted(reserved_client_ids)
@@ -469,14 +470,15 @@ class BftTestNetwork:
         combined_clients_set = set(combined_clients)
         print(f"combined_clients_set={combined_clients_set}")
         assert len(combined_clients_set) == len(combined_clients), "Client Ids and Reserved Client Ids must all be unique ids"
-        client_ids_chunks = split(client_ids, NUM_PARTICIPANTS)
-        reserved_client_ids_chunks = split(reserved_client_ids, NUM_PARTICIPANTS)
+        self.num_participants = min(NUM_PARTICIPANTS, len(client_ids))
+        client_ids_chunks = split(client_ids, self.num_participants)
+        reserved_client_ids_chunks = split(reserved_client_ids, self.num_participants)
         principals_to_participant_map = {}
 
         # iterate number of participants
         print(f"client_ids_chunks={client_ids_chunks}")
         print(f"reserved_client_ids_chunks={reserved_client_ids_chunks}")
-        for i in range(NUM_PARTICIPANTS):
+        for i in range(self.num_participants):
             # add client_ids to principals
             for cid in client_ids_chunks[i]:
                 principals = principals + str(cid) + " "
