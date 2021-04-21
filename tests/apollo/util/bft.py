@@ -439,11 +439,11 @@ class BftTestNetwork:
     def create_principals_mapping(self):
         """
         If client principal ids range from 11-20, for example, this method splits them into groups based on NUM_PARTICIPANTS.
-        Client ids in each group will be space separated, and each group will be comma separated. 
-        E.g. "11 12,13 14,15 16,17 18,19 20" for 10 client ids divided into 5 participants.
+        Client ids in each group will be space separated, and each group will be semicolon separated. 
+        E.g. "11 12;13 14;15 16;17 18;19 20" for 10 client ids divided into 5 participants.
         If there are reserved clients, they are added at the end of the group in round robin manner.
         Thus, if there are 2 reserved client, with ids 21 and 22, the final string would look like:
-        "11 12 21,13 14 22,15 16,17 18,19 20".
+        "11 12 21;13 14 22;15 16;17 18,19 20".
         This method also returns a principals to participants map, with the key being the principal id
         of the client or reserved client, and the value being the participant it belongs to (numbered 1 onwards).
         """
@@ -456,7 +456,7 @@ class BftTestNetwork:
         client_ids = range(start_id, start_id + self.config.num_clients)
         start_id = self.num_total_replicas() + self.config.num_clients
         reserved_client_ids = range(start_id, start_id + RESERVED_CLIENTS_QUOTA)
-        
+
         principals = ""
         print(f"self.clients={self.clients}")
         print(f"self.reserved_clients={self.reserved_clients}")
@@ -489,10 +489,10 @@ class BftTestNetwork:
             if principals[-1] == ' ':
                 principals = principals[:-1]
             # add , to separate next set of client_ids
-            principals = principals + ","
+            principals = principals + ";"
 
         # remove last ,
-        if principals[-1] == ',':
+        if principals[-1] == ';':
             principals = principals[:-1]
         print(f"principals={principals}")
         print(f"principals_to_participant_map={principals_to_participant_map}")
