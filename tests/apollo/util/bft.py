@@ -209,7 +209,7 @@ class BftTestNetwork:
             os.chdir(self.origdir)
             shutil.rmtree(self.testdir, ignore_errors=True)
             shutil.rmtree(self.certdir, ignore_errors=True)
-            shutil.rmtree(self.txn_signing_keys_path, ignore_errors=True)
+            shutil.rmtree(self.txn_signing_keys_base_path, ignore_errors=True)
             if self.test_dir and self.test_start_time:
                 with open(f"{self.test_dir}test_duration.log", 'w+') as log_file:
                     log_file.write(f"test duration = {time.time() - self.test_start_time} seconds\n")
@@ -242,8 +242,8 @@ class BftTestNetwork:
         self.test_start_time = None
         self.perf_proc = None
         self.txn_signing_enabled = True if os.environ.get('TXN_SIGNING_ENABLED', "").lower() == "true" else False
-        self.txn_signing_keys_path = tempfile.mkdtemp() if self.txn_signing_enabled else ""
-        self.compute_principals_mapping()
+        # Setup transaction signing parameters
+        self.setup_txn_signing()
 
     @classmethod
     def new(cls, config, background_nursery, client_factory=None):
@@ -280,13 +280,6 @@ class BftTestNetwork:
             # Generate certificates for all replicas, clients, and reserved clients
             bft_network.generate_tls_certs(bft_network.num_total_replicas() + config.num_clients + RESERVED_CLIENTS_QUOTA)
 
-        path = os.path.join(bft_network.txn_signing_keys_path, "transaction_signing_keys")
-        if (not os.path.isdir(path)):
-            gen_script_path = "/concord-bft/scripts/linux/create_concord_clients_transaction_signing_keys.sh"
-            args = [gen_script_path, "-n", str(NUM_PARTICIPANTS), "-o", bft_network.txn_signing_keys_path]
-            print(f"args={args}")
-            subprocess.run(args, check=True, stdout=subprocess.DEVNULL)
-
         bft_network._init_metrics()
         bft_network._create_clients()
         bft_network._create_reserved_clients()
@@ -319,19 +312,6 @@ class BftTestNetwork:
         bft_network._create_reserved_clients()
         return bft_network
 
-    def compute_principals_mapping(self):
-        start_id = self.config.n + self.config.num_ro_replicas
-        client_ids = range(start_id, start_id + self.config.num_clients)
-        start_id = self.num_total_replicas() + self.config.num_clients
-        reserved_client_ids = range(start_id, start_id + RESERVED_CLIENTS_QUOTA)
-
-        if self.txn_signing_enabled:
-            self.create_principals_mapping(client_ids, reserved_client_ids)
-        else:
-            self.principals_mapping = ""
-            self.principals_to_participant_map = {}
-        print("xxx")
-
     async def change_configuration(self, config):
         """
         When changing an existing bft-network, we would want to change only its configuration related parts
@@ -360,6 +340,10 @@ class BftTestNetwork:
         if self.comm_type() == bft_config.COMM_TYPE_TCP_TLS:
             # Generate certificates for replicas, clients, and reserved clients
             self.generate_tls_certs(self.num_total_replicas() + config.num_clients + RESERVED_CLIENTS_QUOTA)
+
+        # remove existing transaction signing keys and generate again
+        shutil.rmtree(self.txn_signing_keys_base_path, ignore_errors=True)
+        self.setup_txn_signing()
 
         self._init_metrics()
         self._create_clients()
@@ -422,7 +406,7 @@ class BftTestNetwork:
                                  REQ_TIMEOUT_MILLI,
                                  RETRY_TIMEOUT_MILLI,
                                  self.certdir,
-                                 self.txn_signing_keys_path,
+                                 self.txn_signing_keys_base_path,
                                  self.principals_to_participant_map)
 
     def _init_metrics(self):
@@ -437,7 +421,22 @@ class BftTestNetwork:
     def random_clients(self, max_clients):
         return set(random.choices(list(self.clients.values()), k=max_clients))
 
-    def create_principals_mapping(self, client_ids, reserved_client_ids):
+    def setup_txn_signing(self):
+        self.txn_signing_keys_base_path = ""
+        self.principals_mapping = ""
+        self.principals_to_participant_map = {}
+        if self.txn_signing_enabled:
+            self.txn_signing_keys_base_path = tempfile.mkdtemp()
+            self.generate_txn_signing_keys(self.txn_signing_keys_base_path)
+            self.principals_mapping, self.principals_to_participant_map = self.create_principals_mapping()
+
+    def generate_txn_signing_keys(self, keys_path):
+        """ Generates num_participants number of key pairs """
+        script_path = "/concord-bft/scripts/linux/create_concord_clients_transaction_signing_keys.sh"
+        args = [script_path, "-n", str(NUM_PARTICIPANTS), "-o", keys_path]
+        subprocess.run(args, check=True, stdout=subprocess.DEVNULL)
+
+    def create_principals_mapping(self):
         """
         If client principal ids range from 11-20, for example, this method splits them into groups based on NUM_PARTICIPANTS.
         Client ids in each group will be space separated, and each group will be comma separated. 
@@ -453,11 +452,18 @@ class BftTestNetwork:
             k, m = divmod(len(a), n)
             return [a[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n)]
 
+        start_id = self.config.n + self.config.num_ro_replicas
+        client_ids = range(start_id, start_id + self.config.num_clients)
+        start_id = self.num_total_replicas() + self.config.num_clients
+        reserved_client_ids = range(start_id, start_id + RESERVED_CLIENTS_QUOTA)
+        
         principals = ""
         print(f"self.clients={self.clients}")
         print(f"self.reserved_clients={self.reserved_clients}")
         client_ids = sorted(client_ids)
+        print("client_ids={}".format(client_ids))
         reserved_client_ids = sorted(reserved_client_ids)
+        print("reserved_client_ids={}".format(reserved_client_ids))
         combined_clients = client_ids + reserved_client_ids
         print(f"combined_clients={combined_clients}")
         combined_clients_set = set(combined_clients)
@@ -470,12 +476,7 @@ class BftTestNetwork:
         # iterate number of participants
         print(f"client_ids_chunks={client_ids_chunks}")
         print(f"reserved_client_ids_chunks={reserved_client_ids_chunks}")
-        first = True
         for i in range(NUM_PARTICIPANTS):
-            if not first:
-                # add , to separate next set of client_ids
-                principals = principals + ","
-            first = False
             # add client_ids to principals
             for cid in client_ids_chunks[i]:
                 principals = principals + str(cid) + " "
@@ -484,15 +485,18 @@ class BftTestNetwork:
             for rcid in reserved_client_ids_chunks[i]:
                 principals = principals + str(rcid) + " "
                 principals_to_participant_map[rcid] = i+1
-            print(f"principals={principals}")
-            print(f"principals_to_participant_map={principals_to_participant_map}")
             # remove last space
             if principals[-1] == ' ':
                 principals = principals[:-1]
+            # add , to separate next set of client_ids
+            principals = principals + ","
 
-        #return (principals, principals_to_participant_map)
-        self.principals_mapping = principals
-        self.principals_to_participant_map = principals_to_participant_map
+        # remove last ,
+        if principals[-1] == ',':
+            principals = principals[:-1]
+        print(f"principals={principals}")
+        print(f"principals_to_participant_map={principals_to_participant_map}")
+        return principals, principals_to_participant_map
 
     def start_replica_cmd(self, replica_id):
         """
@@ -511,10 +515,10 @@ class BftTestNetwork:
                 cmd.append(self.certdir)
             if self.txn_signing_enabled:
                 cmd.append("-p")
-                cmd.append(str(self.principals_mapping))
-                path = os.path.join(self.txn_signing_keys_path, "transaction_signing_keys")
+                cmd.append(self.principals_mapping)
+                keys_path = os.path.join(self.txn_signing_keys_base_path, "transaction_signing_keys")
                 cmd.append("-t")
-                cmd.append(path)
+                cmd.append(keys_path)
             return cmd
 
     def stop_replica_cmd(self, replica_id):
