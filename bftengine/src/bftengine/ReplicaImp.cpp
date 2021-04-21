@@ -133,7 +133,9 @@ bool ReplicaImp::validateMessage(MessageBase *msg) {
     DebugStatistics::onReceivedExMessage(msg->type());
   }
   try {
+    // LOG_INFO(GL, "1x1 before validate");
     msg->validate(*repsInfo);
+    // LOG_INFO(GL, "1x1 after validate");
     return true;
   } catch (ClientSignatureVerificationFailedException &e) {
     metric_client_req_sig_veirification_failed_.Get().Inc();
@@ -429,6 +431,8 @@ PrePrepareMsg *ReplicaImp::createPrePrepareMessage() {
 ClientRequestMsg *ReplicaImp::addRequestToPrePrepareMessage(ClientRequestMsg *&nextRequest,
                                                             PrePrepareMsg &prePrepareMsg,
                                                             uint16_t maxStorageForRequests) {
+  nextRequest->printHeader();
+  LOG_ERROR(GL, "1x1 size is " << nextRequest->size());
   if (nextRequest->size() <= prePrepareMsg.remainingSizeForRequests()) {
     SCOPED_MDC_CID(nextRequest->getCid());
     if (clientsManager->canBecomePending(nextRequest->clientProxyId(), nextRequest->requestSeqNum())) {
@@ -516,6 +520,8 @@ void ReplicaImp::startConsensusProcess(PrePrepareMsg *pp) {
 
 void ReplicaImp::startConsensusProcess(PrePrepareMsg *pp, bool isInternalNoop) {
   if (!isCurrentPrimary()) return;
+  LOG_INFO(GL, "1x1 call stack:");
+  printCallStack();
   auto firstPath = pp->firstPath();
   if (config_.getdebugStatisticsEnabled()) {
     DebugStatistics::onSendPrePrepareMessage(pp->numberOfRequests(), requestsQueueOfPrimary.size());

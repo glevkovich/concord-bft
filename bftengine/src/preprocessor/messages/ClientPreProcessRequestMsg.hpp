@@ -32,7 +32,9 @@ class ClientPreProcessRequestMsg : public ClientRequestMsg {
                              uint32_t requestSignatureLen = 0);
 
   ClientPreProcessRequestMsg(MessageBase* msgBase) : ClientRequestMsg(msgBase) {}
-  void validate(const ReplicasInfo& repInfo) const { validateRequest(repInfo, getExpectedSignatureLength()); }
+  void validate(const ReplicasInfo& repInfo) const {
+    validateRequest(repInfo, repInfo.isIdOfExternalClient(senderId()));
+  }
   std::unique_ptr<MessageBase> convertToClientRequestMsg(bool resetPreProcessFlag, bool emptyReq = false);
 };
 
