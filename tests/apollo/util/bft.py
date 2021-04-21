@@ -280,6 +280,13 @@ class BftTestNetwork:
             # Generate certificates for all replicas, clients, and reserved clients
             bft_network.generate_tls_certs(bft_network.num_total_replicas() + config.num_clients + RESERVED_CLIENTS_QUOTA)
 
+        path = os.path.join(bft_network.txn_signing_keys_path, "transaction_signing_keys")
+        if (not os.path.isdir(path)):
+            gen_script_path = "/concord-bft/scripts/linux/create_concord_clients_transaction_signing_keys.sh"
+            args = [gen_script_path, "-n", str(NUM_PARTICIPANTS), "-o", bft_network.txn_signing_keys_path]
+            print(f"args={args}")
+            subprocess.run(args, check=True, stdout=subprocess.DEVNULL)
+
         bft_network._init_metrics()
         bft_network._create_clients()
         bft_network._create_reserved_clients()
@@ -463,7 +470,12 @@ class BftTestNetwork:
         # iterate number of participants
         print(f"client_ids_chunks={client_ids_chunks}")
         print(f"reserved_client_ids_chunks={reserved_client_ids_chunks}")
+        first = True
         for i in range(NUM_PARTICIPANTS):
+            if not first:
+                # add , to separate next set of client_ids
+                principals = principals + ","
+            first = False
             # add client_ids to principals
             for cid in client_ids_chunks[i]:
                 principals = principals + str(cid) + " "
@@ -477,8 +489,6 @@ class BftTestNetwork:
             # remove last space
             if principals[-1] == ' ':
                 principals = principals[:-1]
-            # add , to separate next set of client_ids
-            principals = principals + ","
 
         #return (principals, principals_to_participant_map)
         self.principals_mapping = principals
@@ -503,11 +513,6 @@ class BftTestNetwork:
                 cmd.append("-p")
                 cmd.append(str(self.principals_mapping))
                 path = os.path.join(self.txn_signing_keys_path, "transaction_signing_keys")
-                if (not os.path.isdir(path)):
-                    gen_script_path = "/concord-bft/scripts/linux/create_concord_clients_transaction_signing_keys.sh"
-                    args = [gen_script_path, "-n", str(NUM_PARTICIPANTS), "-o", self.txn_signing_keys_path]
-                    print(f"args={args}")
-                    subprocess.run(args, check=True, stdout=subprocess.DEVNULL)
                 cmd.append("-t")
                 cmd.append(path)
             return cmd

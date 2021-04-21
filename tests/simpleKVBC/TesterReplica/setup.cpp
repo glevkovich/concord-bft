@@ -269,13 +269,12 @@ std::unique_ptr<IStorageFactory> TestSetup::GetStorageFactory() {
   return std::make_unique<v2MerkleTree::RocksDBStorageFactory>(dbPath.str());
 }
 
-std::vector<std::string> TestSetup::getKeyDirectories(const std::string& keysRootPath) {
+std::vector<std::string> TestSetup::getKeyDirectories(const std::string& path) {
   std::vector<std::string> result;
-  std::string fullKeyDir = keysRootPath + "/transaction_signing_keys";
-  if (!fs::exists(keysRootPath) || !fs::is_directory(keysRootPath)) {
-    throw std::invalid_argument{"Transaction signing keys path doesn't exist at " + keysRootPath};
+  if (!fs::exists(path) || !fs::is_directory(path)) {
+    throw std::invalid_argument{"Transaction signing keys path doesn't exist at " + path};
   }
-  for (auto& dir : fs::directory_iterator(fullKeyDir)) {
+  for (auto& dir : fs::directory_iterator(path)) {
     if (fs::exists(dir) && fs::is_directory(dir)) {
       result.push_back(dir.path().string());
     }
