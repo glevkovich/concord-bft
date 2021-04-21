@@ -67,11 +67,11 @@ void PrePrepareMsg::validate(const ReplicasInfo& repInfo) const {
   if (SigManager::getInstance()->isClientTransactionSigningEnabled()) {
     auto it = RequestsIterator(this);
     char* requestBody = nullptr;
+    // Here we validate each of the client requests arriving encapsulated inside the pre-prepare message
+    // This might also include validating the request's client signature
     while (it.getAndGoToNext(requestBody)) {
       ClientRequestMsg req((ClientRequestMsgHeader*)requestBody);
-      if (repInfo.isIdOfExternalClient(req.senderId())) {
-        req.validateRequestSignature();
-      }
+      req.validate(repInfo);
     }
   }
 }

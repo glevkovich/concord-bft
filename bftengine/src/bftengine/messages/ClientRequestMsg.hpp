@@ -68,11 +68,7 @@ class ClientRequestMsg : public MessageBase {
 
   std::string getCid() const;
 
-  void validate(const ReplicasInfo& repInfo) const override;
-
-  // We assume that caller already validated the request's other parts, and checked that request arrived from an
-  // external client id
-  void validateRequestSignature() const;
+  void validate(const ReplicasInfo& repInfo) const override { validateImp(repInfo, true); }
 
   // temporary
   void printHeader() {
@@ -92,8 +88,8 @@ class ClientRequestMsg : public MessageBase {
  protected:
   ClientRequestMsgHeader* msgBody() const { return ((ClientRequestMsgHeader*)msgBody_); }
 
-  void validateRequest(const ReplicasInfo& repInfo, bool isExternalclient) const;
-  uint16_t getExpectedSignatureLength() const;
+  void validateImp(const ReplicasInfo& repInfo, bool validateSignature) const;
+
   struct Recorders {
     Recorders() {
       auto& registrar = concord::diagnostics::RegistrarSingleton::getInstance();
