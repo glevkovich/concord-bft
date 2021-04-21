@@ -71,8 +71,9 @@ void ReplicaBase::sendRaw(MessageBase* m, NodeIdType dest) {
   MsgCode::Type type = static_cast<MsgCode::Type>(m->type());
 
   LOG_DEBUG(MSGS, "sending msg type: " << type << ", dest: " << dest);
-  if (msgsCommunicator_->sendAsyncMessage(dest, m->body(), m->size())) {
-    LOG_ERROR(MSGS, "sendAsyncMessage failed: " << KVLOG(type, dest));
+  auto err = msgsCommunicator_->sendAsyncMessage(dest, m->body(), m->size());
+  if (err) {
+    LOG_ERROR(MSGS, "sendAsyncMessage failed: " << KVLOG(type, dest, err));
   }
 }
 

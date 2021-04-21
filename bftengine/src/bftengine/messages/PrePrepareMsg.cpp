@@ -69,8 +69,8 @@ void PrePrepareMsg::validate(const ReplicasInfo& repInfo) const {
     char* requestBody = nullptr;
     while (it.getAndGoToNext(requestBody)) {
       ClientRequestMsg req((ClientRequestMsgHeader*)requestBody);
-      if (req.getExpectedSignatureLength() > 0) {
-        req.validateRequestSignature(repInfo);
+      if (repInfo.isIdOfExternalClient(req.senderId())) {
+        req.validateRequestSignature();
       }
     }
   }
