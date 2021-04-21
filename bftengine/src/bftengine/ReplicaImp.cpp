@@ -520,8 +520,6 @@ void ReplicaImp::startConsensusProcess(PrePrepareMsg *pp) {
 
 void ReplicaImp::startConsensusProcess(PrePrepareMsg *pp, bool isInternalNoop) {
   if (!isCurrentPrimary()) return;
-  LOG_INFO(GL, "1x1 call stack:");
-  printCallStack();
   auto firstPath = pp->firstPath();
   if (config_.getdebugStatisticsEnabled()) {
     DebugStatistics::onSendPrePrepareMessage(pp->numberOfRequests(), requestsQueueOfPrimary.size());
