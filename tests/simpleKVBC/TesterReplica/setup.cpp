@@ -40,6 +40,11 @@ namespace fs = std::experimental::filesystem;
 namespace concord::kvbc {
 
 std::unique_ptr<TestSetup> TestSetup::ParseArgs(int argc, char** argv) {
+  std::stringstream args;
+  for (int i{1}; i < argc; ++i) {
+    args << argv[i] << " ";
+  }
+  LOG_INFO(GL, "Parsing" << KVLOG(argc) << " arguments, args:" << args.str());
   try {
     // used to get info from parsing the key file
     bftEngine::ReplicaConfig& replicaConfig = bftEngine::ReplicaConfig::instance();
@@ -287,19 +292,19 @@ void TestSetup::setPublicKeysOfClients(
     const std::string& keysRootPath,
     std::set<std::pair<const std::string, std::set<uint16_t>>>& publicKeysOfClients) {
   // The string principalsMapping looks like:
-  // "11 12,13 14,15 16,17 18,19 20", for 10 client ids divided into 5 participants.
-  // If there are 2 reserved client, with ids 21 and 22, the mapping string would look like:
-  // "11 12 21,13 14 22,15 16,17 18,19 20"
-  // such that the reserved client ids are added at the end of the groups in round robin manner.
+  // "11 12;13 14;15 16;17 18;19 20", for 10 client ids divided into 5 participants.
 
+  LOG_INFO(GL, "" << KVLOG(principalsMapping, keysRootPath));
   std::vector<std::string> keysDirectories = TestSetup::getKeyDirectories(keysRootPath);
   std::vector<std::string> clientIdChunks;
-  boost::split(clientIdChunks, principalsMapping, boost::is_any_of(","));
+  boost::split(clientIdChunks, principalsMapping, boost::is_any_of(";"));
 
   if (clientIdChunks.size() != keysDirectories.size()) {
-    throw std::runtime_error(
-        "Number of keys directory should match the number of number of sets of clientIds mappings in principals "
-        "mapping string");
+    std::stringstream msg;
+    msg << "Number of keys directory should match the number of sets of clientIds mappings in principals "
+           "mapping string "
+        << KVLOG(keysDirectories.size(), clientIdChunks.size(), principalsMapping);
+    throw std::runtime_error(msg.str());
   }
 
   // Sort keysDirectories just to ensure ordering of the folders
