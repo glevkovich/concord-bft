@@ -64,7 +64,7 @@ ReplyHeader = namedtuple('ReplyHeader', ['span_context_size', 'primary_id',
     'req_seq_num', 'length', 'rsi_length'])
 
 def pack_request(client_id, req_seq_num, read_only, timeout_milli, cid, msg, pre_process=False, reconfiguration=False, 
-                span_context=b'', signature=None):
+                span_context=b'', signature=b''):
     """Create and return a buffer with a header and message"""
     flags = 0x0
     if read_only:
