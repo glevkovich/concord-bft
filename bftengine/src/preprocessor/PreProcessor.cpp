@@ -59,7 +59,9 @@ void PreProcessor::setAggregator(std::shared_ptr<concordMetrics::Aggregator> agg
 
 bool PreProcessor::validateMessage(MessageBase *msg) const {
   try {
+    // LOG_INFO(GL, "1x1 before validate");
     msg->validate(myReplica_.getReplicasInfo());
+    // LOG_INFO(GL, "1x1 after validate");
     return true;
   } catch (ClientSignatureVerificationFailedException &e) {
     LOG_ERROR(logger(), "Received invalid message from " << KVLOG(msg->senderId(), msg->type(), e.what()));
