@@ -38,6 +38,7 @@
 #include "ReplicasAskedToLeaveViewInfo.hpp"
 #include "PerformanceManager.hpp"
 #include "secrets_manager_impl.h"
+#include "SigManager.hpp"
 
 namespace bftEngine::impl {
 

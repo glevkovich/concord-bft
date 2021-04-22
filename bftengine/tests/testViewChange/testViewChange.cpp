@@ -28,6 +28,7 @@
 #include "IncomingMsgsStorageImp.hpp"
 #include "ViewsManager.hpp"
 #include "helper.hpp"
+#include "SigManager.hpp"
 
 #include "gtest/gtest.h"
 
