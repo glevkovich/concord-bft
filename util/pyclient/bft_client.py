@@ -90,6 +90,9 @@ class BftClient(ABC):
         self.rsi_replies = dict()
         self.comm_prepared = False
 
+        txn_signing_key_path = self._get_txn_signing_priv_key_path(self.client_id)
+        self.signing_key = RSA.import_key(open(txn_signing_key_path).read()) if txn_signing_key_path else None
+
     @abstractmethod
     def __enter__(self):
         """ Context manager method for 'with' statements """
@@ -157,18 +160,13 @@ class BftClient(ABC):
         if cid is None:
             cid = str(seq_num)
 
-        txn_signing_key_path = self._get_txn_signing_priv_key_path(self.client_id)
-        sig_len = 0
-        if txn_signing_key_path:
-            key = RSA.import_key(open(txn_signing_key_path).read())
-            # h = SHA256.new(msg.encode("utf8"))
+        signature = None
+        if self.signing_key:
             h = SHA256.new(msg)
-            signature = pkcs1_15.new(key).sign(h)
-            sig_len = len(signature)
-            msg = signature
+            signature = pkcs1_15.new(self.signing_key).sign(h)
 
         data = bft_msgs.pack_request(self.client_id, seq_num, read_only, self.config.req_timeout_milli, cid, msg,
-                                    pre_process, reconfiguration=reconfiguration, req_sig_len=sig_len)
+                                    pre_process, reconfiguration=reconfiguration, signature=signature)
 
         if m_of_n_quorum is None:
             m_of_n_quorum = MofNQuorum.LinearizableQuorum(self.config, [r.id for r in self.replicas])

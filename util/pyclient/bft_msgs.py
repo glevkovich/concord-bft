@@ -64,7 +64,7 @@ ReplyHeader = namedtuple('ReplyHeader', ['span_context_size', 'primary_id',
     'req_seq_num', 'length', 'rsi_length'])
 
 def pack_request(client_id, req_seq_num, read_only, timeout_milli, cid, msg, pre_process=False, reconfiguration=False, 
-                span_context=b'', req_sig_len=0):
+                span_context=b'', signature=None):
     """Create and return a buffer with a header and message"""
     flags = 0x0
     if read_only:
@@ -73,8 +73,9 @@ def pack_request(client_id, req_seq_num, read_only, timeout_milli, cid, msg, pre
         flags = 0x2
     if reconfiguration:
         flags |= RECONFIG_FLAG
-    header = RequestHeader(len(span_context), client_id, flags, req_seq_num, len(msg), timeout_milli, len(cid), req_sig_len)
-    data = b''.join([pack_request_header(header, pre_process), span_context, msg, cid.encode()])
+    sig_len = len(signature) if signature else 0
+    header = RequestHeader(len(span_context), client_id, flags, req_seq_num, len(msg), timeout_milli, len(cid), sig_len)
+    data = b''.join([pack_request_header(header, pre_process), span_context, msg, cid.encode(), signature])
     return data
 
 def pack_batch_request(client_id, num_of_messages_in_batch, msg_data, cid):
