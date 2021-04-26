@@ -707,6 +707,9 @@ bool PreProcessor::registerRequest(ClientPreProcessReqMsgUniquePtr clientReqMsg,
   NodeIdType senderId = 0;
   SeqNum reqSeqNum = 0;
   string cid;
+  uint32_t requestSignatureLength = 0;
+  char *requestSignature = nullptr;
+
   bool clientReqMsgSpecified = false;
   if (clientReqMsg) {
     clientId = clientReqMsg->clientProxyId();
@@ -714,6 +717,8 @@ bool PreProcessor::registerRequest(ClientPreProcessReqMsgUniquePtr clientReqMsg,
     reqSeqNum = clientReqMsg->requestSeqNum();
     cid = clientReqMsg->getCid();
     clientReqMsgSpecified = true;
+    requestSignatureLength = clientReqMsg->requestSignatureLength();
+    requestSignature = clientReqMsg->requestSignature();
   } else {
     clientId = preProcessRequestMsg->clientId();
     senderId = preProcessRequestMsg->senderId();
@@ -722,10 +727,18 @@ bool PreProcessor::registerRequest(ClientPreProcessReqMsgUniquePtr clientReqMsg,
   }
   SCOPED_MDC_CID(cid);
   const auto &reqEntry = ongoingRequests_[getOngoingReqIndex(clientId, reqOffsetInBatch)];
-  if (!reqEntry->reqProcessingStatePtr)
-    reqEntry->reqProcessingStatePtr = make_unique<RequestProcessingState>(
-        numOfReplicas_, clientId, reqOffsetInBatch, cid, reqSeqNum, move(clientReqMsg), preProcessRequestMsg);
-  else if (!reqEntry->reqProcessingStatePtr->getPreProcessRequest())
+  if (!reqEntry->reqProcessingStatePtr) {
+    reqEntry->reqProcessingStatePtr = make_unique<RequestProcessingState>(numOfReplicas_,
+                                                                          clientId,
+                                                                          reqOffsetInBatch,
+                                                                          cid,
+                                                                          reqSeqNum,
+                                                                          move(clientReqMsg),
+                                                                          preProcessRequestMsg,
+                                                                          requestSignature,
+                                                                          requestSignatureLength);
+    LOG_INFO(logger(), "1x1 " << KVLOG(cid, requestSignatureLength));
+  } else if (!reqEntry->reqProcessingStatePtr->getPreProcessRequest())
     // The request was registered before as arrived directly from the client
     reqEntry->reqProcessingStatePtr->setPreProcessRequest(preProcessRequestMsg);
   else {
@@ -840,11 +853,14 @@ void PreProcessor::registerAndHandleClientPreProcessReqOnNonPrimary(ClientPrePro
   const auto msgType = clientReqMsg->type();
   const auto msgSize = clientReqMsg->size();
   const auto cid = clientReqMsg->getCid();
+  const auto sigLen = clientReqMsg->requestSignatureLength();
+
   // Register a client request message with an empty PreProcessRequestMsg to allow follow up.
   if (registerRequest(move(clientReqMsg), PreProcessRequestMsgSharedPtr(), reqOffsetInBatch)) {
     LOG_INFO(logger(),
              "Start request processing by a non-primary replica"
-                 << KVLOG(reqSeqNum, cid, clientId, reqOffsetInBatch, senderId, reqTimeoutMilli));
+                 << KVLOG(reqSeqNum, cid, clientId, reqOffsetInBatch, senderId, reqTimeoutMilli, msgSize, sigLen));
+
     if (arrivedInBatch) return;  // Need to re-send the whole batch to the primary
     sendMsg(msgBody, myReplica_.currentPrimary(), msgType, msgSize);
     LOG_DEBUG(logger(),

@@ -62,7 +62,7 @@ class ClientRequestMsg : public MessageBase {
 
   uint32_t requestSignatureLength() const { return msgBody()->reqSignatureLength; }
 
-  const char* requestSignature() const;
+  char* requestSignature() const;
 
   uint64_t requestTimeoutMilli() const { return msgBody()->timeoutMilli; }
 

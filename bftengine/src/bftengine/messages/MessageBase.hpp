@@ -102,6 +102,7 @@ class MessageBase {
   Header *msgBody_ = nullptr;
   MsgSize msgSize_ = 0;
   MsgSize storageSize_ = 0;
+  // This might be the direct sender, but not the originator
   NodeIdType sender_;
   // true IFF this instance is not responsible for de-allocating the body:
   bool owner_ = true;

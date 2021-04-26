@@ -169,6 +169,8 @@ class BftClient(ABC):
 
         data = bft_msgs.pack_request(self.client_id, seq_num, read_only, self.config.req_timeout_milli, cid, msg,
                                     pre_process, reconfiguration=reconfiguration, signature=signature)
+        #sig = ''.join(format(x, '02x') for x in signature)
+        #print(f"client_id={self.client_id} msg_size={len(msg)} seq_num={seq_num} cid={cid} pre_process={pre_process} reconfiguration={reconfiguration} sig={sig}")
 
         if m_of_n_quorum is None:
             m_of_n_quorum = MofNQuorum.LinearizableQuorum(self.config, [r.id for r in self.replicas])
@@ -475,6 +477,8 @@ class TcpTlsClient(BftClient):
         stream = self.ssl_streams[dest_addr]
         try:
             await stream.send_all(out_buff)
+            #out_buff_hex = ''.join(format(x, '02x') for x in out_buff)
+            #print(f"sent {len(out_buff)} bytes, out_buff={out_buff_hex}")
             return True
         except (trio.BrokenResourceError, trio.ClosedResourceError):
             # Failed! close the stream and return failure.

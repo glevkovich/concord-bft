@@ -432,7 +432,6 @@ ClientRequestMsg *ReplicaImp::addRequestToPrePrepareMessage(ClientRequestMsg *&n
                                                             PrePrepareMsg &prePrepareMsg,
                                                             uint16_t maxStorageForRequests) {
   nextRequest->printHeader();
-  LOG_ERROR(GL, "1x1 size is " << nextRequest->size());
   if (nextRequest->size() <= prePrepareMsg.remainingSizeForRequests()) {
     SCOPED_MDC_CID(nextRequest->getCid());
     if (clientsManager->canBecomePending(nextRequest->clientProxyId(), nextRequest->requestSeqNum())) {
