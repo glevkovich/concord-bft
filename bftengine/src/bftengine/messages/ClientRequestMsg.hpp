@@ -62,19 +62,33 @@ class ClientRequestMsg : public MessageBase {
 
   uint32_t requestSignatureLength() const { return msgBody()->reqSignatureLength; }
 
-  const char* requestSignature() const;
+  char* requestSignature() const;
 
   uint64_t requestTimeoutMilli() const { return msgBody()->timeoutMilli; }
 
   std::string getCid() const;
 
-  void validate(const ReplicasInfo&) const override;
-  void validateRequest(const ReplicasInfo&, uint16_t) const;
-  void validateRequestSignature(const ReplicasInfo&) const;
-  uint16_t getExpectedSignatureLength() const;
+  void validate(const ReplicasInfo& repInfo) const override { validateImp(repInfo); }
+
+  // temporary
+  void printHeader() {
+    ClientRequestMsgHeader* header = msgBody();
+    LOG_INFO(GL,
+             "1x1" << KVLOG(header->msgType,
+                            header->spanContextSize,
+                            header->idOfClientProxy,
+                            header->flags,
+                            header->reqSeqNum,
+                            header->requestLength,
+                            header->timeoutMilli,
+                            header->cidLength,
+                            header->reqSignatureLength));
+  }
 
  protected:
   ClientRequestMsgHeader* msgBody() const { return ((ClientRequestMsgHeader*)msgBody_); }
+
+  void validateImp(const ReplicasInfo& repInfo) const;
 
   struct Recorders {
     Recorders() {

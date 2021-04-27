@@ -13,7 +13,11 @@
 
 #include <cstring>
 #include <memory>
+#include <set>
+#include <string>
+
 #include "gtest/gtest.h"
+
 #include "bftengine/ReplicaConfig.hpp"
 #include "Serializable.h"
 #include "messages/MessageBase.hpp"
@@ -21,9 +25,7 @@
 #include "threshsign/IThresholdVerifier.h"
 #include "threshsign/IPublicKey.h"
 #include "CryptoManager.hpp"
-
-#include <set>
-#include <string>
+#include "SigManager.hpp"
 
 class IShareSecretKeyDummy : public IShareSecretKey {
  public:

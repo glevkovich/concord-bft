@@ -42,12 +42,12 @@
 #include "messages/ReplicaAsksToLeaveViewMsg.hpp"
 #include "CryptoManager.hpp"
 #include "ControlHandler.hpp"
+#include "KeyExchangeManager.h"
 
 #include <memory>
 #include <string>
 #include <type_traits>
 #include <bitset>
-#include "KeyExchangeManager.h"
 
 #define getName(var) #var
 
@@ -133,7 +133,9 @@ bool ReplicaImp::validateMessage(MessageBase *msg) {
     DebugStatistics::onReceivedExMessage(msg->type());
   }
   try {
+    // LOG_INFO(GL, "1x1 before validate");
     msg->validate(*repsInfo);
+    // LOG_INFO(GL, "1x1 after validate");
     return true;
   } catch (ClientSignatureVerificationFailedException &e) {
     metric_client_req_sig_veirification_failed_.Get().Inc();
@@ -429,6 +431,7 @@ PrePrepareMsg *ReplicaImp::createPrePrepareMessage() {
 ClientRequestMsg *ReplicaImp::addRequestToPrePrepareMessage(ClientRequestMsg *&nextRequest,
                                                             PrePrepareMsg &prePrepareMsg,
                                                             uint16_t maxStorageForRequests) {
+  nextRequest->printHeader();
   if (nextRequest->size() <= prePrepareMsg.remainingSizeForRequests()) {
     SCOPED_MDC_CID(nextRequest->getCid());
     if (clientsManager->canBecomePending(nextRequest->clientProxyId(), nextRequest->requestSeqNum())) {

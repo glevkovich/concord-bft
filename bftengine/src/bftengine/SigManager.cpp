@@ -54,6 +54,8 @@ SigManager* SigManager::initImpl(ReplicaId myId,
 
   if (publicKeysOfClients) {
     // Multiple clients might be signing with the same private key (1 to many relation)
+    // Also, we do not enforce to have all range between [lowBound, highBound] construcred. We might want to have less
+    // principal ids mapped to keys than what is stated in the range.
     lowBound = numRoReplicas + numReplicas + numOfClientProxies;
     highBound = lowBound + numOfExternalClients - 1;
     for (const auto& p : (*publicKeysOfClients)) {
@@ -109,7 +111,7 @@ SigManager::SigManager(PrincipalId myId,
   map<KeyIndex, RSAVerifier*> publicKeyIndexToVerifier;
   size_t numPublickeys = publickeys.size();
   ConcordAssert(publicKeysMapping.size() >= numPublickeys);
-  ConcordAssert(numPublickeys + 1 >= numReplicas);
+  // ConcordAssert(numPublickeys + 1 >= numReplicas); remove
   mySigner_ = new RSASigner(mySigPrivateKey.first.c_str(), mySigPrivateKey.second);
   for (const auto& p : publicKeysMapping) {
     ConcordAssert(verifiers_.count(p.first) == 0);
@@ -139,6 +141,7 @@ SigManager::SigManager(PrincipalId myId,
              "Key index " << i << " is used by " << ids.size() << " principal IDs"
                           << " from " << (*std::min_element(ids.begin(), ids.end())) << " to "
                           << (*std::max_element(ids.begin(), ids.end())));
+    ++i;
   }
 
   LOG_INFO(GL,
