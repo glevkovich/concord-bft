@@ -203,9 +203,16 @@ class BftClient(ABC):
             msg = msg_batch[n]
             msg_seq_num = batch_seq_nums[n]
             msg_cid = str(msg_seq_num)
+
+            signature = b''
+            if self.signing_key:
+                h = SHA256.new(msg)
+                signature = pkcs1_15.new(self.signing_key).sign(h)
+
             msg_data = b''.join([msg_data, bft_msgs.pack_request(
-                self.client_id, msg_seq_num, False, self.config.req_timeout_milli, msg_cid, msg, True)])
-        
+                self.client_id, msg_seq_num, False, self.config.req_timeout_milli, msg_cid, msg, True,
+                reconfiguration=False, span_context=b'', signature=signature)])
+
         data = bft_msgs.pack_batch_request(
             self.client_id, batch_size, msg_data, cid)
 
