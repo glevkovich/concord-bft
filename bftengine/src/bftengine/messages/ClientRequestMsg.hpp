@@ -68,7 +68,7 @@ class ClientRequestMsg : public MessageBase {
 
   std::string getCid() const;
 
-  void validate(const ReplicasInfo& repInfo) const override { validateImp(repInfo, true); }
+  void validate(const ReplicasInfo& repInfo) const override { validateImp(repInfo); }
 
   // temporary
   void printHeader() {
@@ -88,7 +88,7 @@ class ClientRequestMsg : public MessageBase {
  protected:
   ClientRequestMsgHeader* msgBody() const { return ((ClientRequestMsgHeader*)msgBody_); }
 
-  void validateImp(const ReplicasInfo& repInfo, bool validateSignature) const;
+  void validateImp(const ReplicasInfo& repInfo) const;
 
   struct Recorders {
     Recorders() {

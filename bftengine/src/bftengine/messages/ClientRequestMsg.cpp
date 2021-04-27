@@ -14,6 +14,7 @@
 #include "assertUtils.hpp"
 #include "ReplicaConfig.hpp"
 #include "SigManager.hpp"
+#include "Replica.hpp"
 
 #include <cstring>
 
@@ -85,41 +86,60 @@ ClientRequestMsg::ClientRequestMsg(ClientRequestMsgHeader* body)
 
 bool ClientRequestMsg::isReadOnly() const { return (msgBody()->flags & READ_ONLY_REQ) != 0; }
 
-void ClientRequestMsg::validateImp(const ReplicasInfo& repInfo, bool validateSignature) const {
+void ClientRequestMsg::validateImp(const ReplicasInfo& repInfo) const {
   const auto* header = msgBody();
-  PrincipalId senderId = header->idOfClientProxy;
-  ConcordAssert(senderId != repInfo.myId());
+  PrincipalId clientId = header->idOfClientProxy;
+  ConcordAssert(this->senderId() != repInfo.myId());
+  /// to do - should it be just the header?
   auto minMsgSize = sizeof(ClientRequestMsgHeader) + header->cidLength + spanContextSize() + header->reqSignatureLength;
   const auto msgSize = size();
   uint16_t expectedSigLen = 0;
   std::stringstream msg;
   auto sigManager = SigManager::getInstance();
   bool isClientTransactionSigningEnabled = sigManager->isClientTransactionSigningEnabled();
-  bool isIdOfExternalClient = repInfo.isIdOfExternalClient(senderId);
+  bool isIdOfExternalClient = repInfo.isIdOfExternalClient(clientId);
   bool doSigVerify = false;
+  bool emptyReq = (header->requestLength == 0);
 
   // LOG_INFO(GL, "1x1 " << __LINE__);
-  if (!repInfo.isValidParticipantId(senderId)) {
-    msg << "Invalid senderId " << senderId;
+  if (!repInfo.isValidParticipantId(clientId)) {
+    msg << "Invalid clientId " << clientId;
     LOG_ERROR(GL, msg.str());
     throw std::runtime_error(msg.str());
   }
-
+  if (!repInfo.isValidParticipantId(this->senderId())) {
+    msg << "Invalid senderId " << this->senderId();
+    LOG_ERROR(GL, msg.str());
+    throw std::runtime_error(msg.str());
+  }
   if (isIdOfExternalClient && isClientTransactionSigningEnabled) {
     // LOG_INFO(GL, "1x1 " << __LINE__);
-    expectedSigLen = sigManager->getSigLength(senderId);
-    if (0 == expectedSigLen) {
-      msg << "Invalid expectedSigLen " << KVLOG(senderId);
-      LOG_ERROR(GL, msg.str());
-      throw std::runtime_error(msg.str());
+
+    // Skip signature validation if:
+    // 1) request has been pre-processed (validation done already on pre-processor) or
+    // 2) request is empty. empty requests are sent from pre-processor in some cases - skip signature
+    if (emptyReq) {
+      expectedSigLen = 0;
+    } else {
+      expectedSigLen = sigManager->getSigLength(clientId);
+      if (0 == expectedSigLen) {
+        msg << "Invalid expectedSigLen " << KVLOG(clientId, this->senderId());
+        LOG_ERROR(GL, msg.str());
+        throw std::runtime_error(msg.str());
+      }
+      if ((header->flags & HAS_PRE_PROCESSED_FLAG) == 0) {
+        doSigVerify = true;
+      }
     }
-    doSigVerify = validateSignature;
+
     // LOG_INFO(GL, "1x1 " << __LINE__);
   }
 
   if (expectedSigLen != header->reqSignatureLength) {
     msg << "Unexpected request signature length: "
-        << KVLOG(senderId,
+        << KVLOG(clientId,
+                 this->senderId(),
+                 header->reqSeqNum,
                  expectedSigLen,
                  header->reqSignatureLength,
                  isIdOfExternalClient,
@@ -127,7 +147,6 @@ void ClientRequestMsg::validateImp(const ReplicasInfo& repInfo, bool validateSig
     LOG_ERROR(GL, msg.str());
     throw std::runtime_error(msg.str());
   }
-
   auto expectedMsgSize =
       sizeof(ClientRequestMsgHeader) + header->requestLength + header->cidLength + spanContextSize() + expectedSigLen;
 
@@ -136,15 +155,22 @@ void ClientRequestMsg::validateImp(const ReplicasInfo& repInfo, bool validateSig
     LOG_ERROR(GL, msg.str());
     throw std::runtime_error(msg.str());
   }
-
-  if (doSigVerify &&
-      !sigManager->verifySig(
-          senderId, requestBuf(), header->requestLength, requestSignature(), header->reqSignatureLength)) {
-    std::stringstream msg;
-    // todo - add info
-    LOG_ERROR(GL, "Signature verification failed for " << KVLOG(senderId));
-    msg << "Signature verification failed for: "
-        << KVLOG(senderId, header->reqSeqNum, header->requestLength, header->reqSignatureLength, getCid(), this->senderId());
+  if (doSigVerify) {
+    if (!sigManager->verifySig(
+            clientId, requestBuf(), header->requestLength, requestSignature(), header->reqSignatureLength)) {
+      std::stringstream msg;
+      // todo - add info
+      LOG_ERROR(GL, "Signature verification failed for " << KVLOG(this->senderId(), clientId));
+      msg << "Signature verification failed for: "
+          << KVLOG(clientId,
+                   this->senderId(),
+                   header->reqSeqNum,
+                   header->requestLength,
+                   header->reqSignatureLength,
+                   getCid(),
+                   this->senderId());
+      throw ClientSignatureVerificationFailedException(msg.str());
+    }
   }
   // LOG_INFO(GL, "1x1 " << __LINE__);
 }

@@ -59,6 +59,17 @@ void PreProcessor::setAggregator(std::shared_ptr<concordMetrics::Aggregator> agg
 
 bool PreProcessor::validateMessage(MessageBase *msg) const {
   try {
+    if (dynamic_cast<ClientPreProcessRequestMsg *>(msg))
+      LOG_INFO(GL, "1x1 ClientPreProcessRequestMsg");
+    else if (dynamic_cast<PreProcessRequestMsg *>(msg))
+      LOG_INFO(GL, "1x1 PreProcessRequestMsg");
+    else if (dynamic_cast<PreProcessReplyMsg *>(msg))
+      LOG_INFO(GL, "1x1 PreProcessReplyMsg");
+    else if (dynamic_cast<ClientBatchRequestMsg *>(msg))
+      LOG_INFO(GL, "1x1 ClientBatchRequestMsg");
+    else
+      LOG_INFO(GL, "1x1 unknown msg");
+
     // LOG_INFO(GL, "1x1 before validate");
     msg->validate(myReplica_.getReplicasInfo());
     // LOG_INFO(GL, "1x1 after validate");
@@ -283,6 +294,8 @@ void PreProcessor::sendCancelPreProcessRequestMsg(const ClientPreProcessReqMsgUn
                                         0,
                                         nullptr,
                                         clientReqMsg->getCid(),
+                                        nullptr,
+                                        0,
                                         clientReqMsg->spanContext<ClientPreProcessReqMsgUniquePtr::element_type>());
   const auto destId = clientReqMsg->senderId();
   SCOPED_MDC_CID(preProcessReqMsg->getCid());
@@ -821,6 +834,8 @@ bool PreProcessor::registerRequestOnPrimaryReplica(ClientPreProcessReqMsgUniqueP
                                         clientReqMsg->requestLength(),
                                         clientReqMsg->requestBuf(),
                                         clientReqMsg->getCid(),
+                                        clientReqMsg->requestSignature(),
+                                        clientReqMsg->requestSignatureLength(),
                                         clientReqMsg->spanContext<ClientPreProcessReqMsgUniquePtr::element_type>());
   return registerRequest(move(clientReqMsg), preProcessRequestMsg, reqOffsetInBatch);
 }
