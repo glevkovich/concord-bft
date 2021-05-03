@@ -225,7 +225,6 @@ class PreProcessor {
     concordMetrics::CounterHandle preProcReqInvalid;
     concordMetrics::CounterHandle preProcReqIgnored;
     concordMetrics::CounterHandle preProcReqRejected;
-    mutable concordMetrics::CounterHandle preProcClientReqSigVerFailed;
     concordMetrics::CounterHandle preProcConsensusNotReached;
     concordMetrics::CounterHandle preProcessRequestTimedOut;
     concordMetrics::CounterHandle preProcPossiblePrimaryFaultDetected;
