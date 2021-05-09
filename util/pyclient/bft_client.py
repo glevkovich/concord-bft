@@ -127,15 +127,17 @@ class BftClient(ABC):
     def get_total_num_replicas(self):
         return len(self.replicas)
 
-    async def write(self, msg, seq_num=None, cid=None, pre_process=False, m_of_n_quorum=None, reconfiguration=False):
+    async def write(self, msg, seq_num=None, cid=None, pre_process=False, m_of_n_quorum=None, reconfiguration=False, corrupt_params=[]):
         """ A wrapper around sendSync for requests that mutate state """
-        return await self.sendSync(msg, False, seq_num, cid, pre_process, m_of_n_quorum, reconfiguration)
+        return await self.sendSync(msg, False, seq_num, cid, pre_process, m_of_n_quorum, reconfiguration, corrupt_params=corrupt_params)
 
-    async def read(self, msg, seq_num=None, cid=None, m_of_n_quorum=None, reconfiguration=False, include_ro=False):
+    async def read(self, msg, seq_num=None, cid=None, m_of_n_quorum=None, reconfiguration=False, include_ro=False, corrupt_params=[]):
         """ A wrapper around sendSync for requests that do not mutate state """
-        return await self.sendSync(msg, True, seq_num, cid, m_of_n_quorum=m_of_n_quorum, reconfiguration=reconfiguration, include_ro=include_ro)
+        return await self.sendSync(msg, True, seq_num, cid, m_of_n_quorum=m_of_n_quorum, \
+            reconfiguration=reconfiguration, include_ro=include_ro, corrupt_params=corrupt_params)
 
-    async def sendSync(self, msg, read_only, seq_num=None, cid=None, pre_process=False, m_of_n_quorum=None, reconfiguration=False, include_ro=False):
+    async def sendSync(self, msg, read_only, seq_num=None, cid=None, pre_process=False, m_of_n_quorum=None, \
+        reconfiguration=False, include_ro=False, corrupt_params=[]):
         """
         Send a client request and wait for a m_of_n_quorum (if None, it will set to 2F+C+1 quorum) of replies.
 
@@ -170,6 +172,10 @@ class BftClient(ABC):
         signature = b''
         if self.signing_key:
             h = SHA256.new(msg)
+            if 'corrupt_key' in corrupt_params:
+                self.signing_key = RSA.generate(2048)
+            if 'corrupt_msg' in corrupt_params:
+                h = SHA256.new(b'compute hash with corrupt message')
             signature = pkcs1_15.new(self.signing_key).sign(h)
 
         data = bft_msgs.pack_request(self.client_id, seq_num, read_only, self.config.req_timeout_milli, cid, msg,
