@@ -17,11 +17,12 @@ from os import environ
 
 import trio
 
-#from util import blinking_replica
+# from util import blinking_replica
 from util import skvbc as kvbc
 from util.bft import with_trio, with_bft_network, KEY_FILE_PREFIX
 
-SKVBC_INIT_GRACE_TIME = 2
+SKVBC_INIT_GRACE_TIME = 5
+
 
 def start_replica_cmd(builddir, replica_id):
     """
@@ -32,7 +33,8 @@ def start_replica_cmd(builddir, replica_id):
     """
     statusTimerMilli = "500"
     viewChangeTimeoutMilli = "10000"
-    path = os.path.join(builddir, "tests", "simpleKVBC", "TesterReplica", "skvbc_replica")
+    path = os.path.join(builddir, "tests", "simpleKVBC",
+                        "TesterReplica", "skvbc_replica")
     return [path,
             "-k", KEY_FILE_PREFIX,
             "-i", str(replica_id),
@@ -40,6 +42,7 @@ def start_replica_cmd(builddir, replica_id):
             "-v", viewChangeTimeoutMilli,
             "-e", str(True)
             ]
+
 
 class SkvbcTestClientTxnSigning(unittest.TestCase):
 
@@ -51,154 +54,205 @@ class SkvbcTestClientTxnSigning(unittest.TestCase):
         return kvbc.SimpleKVBCProtocol(bft_network)
 
     def writeset(self, skvbc, max_size, keys=None):
-        writeset_keys = skvbc.random_keys(random.randint(0, max_size)) if keys is None else keys
+        writeset_keys = skvbc.random_keys(
+            random.randint(0, max_size)) if keys is None else keys
         writeset_values = skvbc.random_values(len(writeset_keys))
         return list(zip(writeset_keys, writeset_values))
 
-    async def negative_tests_write(self, bft_network, corrupt_param={}):
-        skvbc = await self.setup_skvbc(bft_network)
-        client = bft_network.random_client()
+    async def corrupted_write(self, bft_network, skvbc, corrupt_params, client=None):
+        assert(len(corrupt_params) > 0 and corrupt_params != None)
+        client = bft_network.random_client() if client == None else client
         read_set = set()
         write_set = self.writeset(skvbc, 2)
-        reply = await client.write(skvbc.write_req(read_set, write_set, 0))
+        await client.write(skvbc.write_req(read_set, write_set, 0))
         read_set = set()
         write_set = self.writeset(skvbc, 2)
         try:
-            reply = await client.write(skvbc.write_req(read_set, write_set, 0), corrupt_params=corrupt_param)
+            await client.write(skvbc.write_req(read_set, write_set, 0), corrupt_params=corrupt_params)
         except trio.TooSlowError as e:
             pass
 
-    async def assert_verification_metrics(self, bft_network, num_requests):
+    async def corrupted_read(self, bft_network, skvbc, corrupt_params, client=None):
+        assert(len(corrupt_params) > 0 and corrupt_params != None)
+        client = bft_network.random_client() if client == None else client
+        try:
+            await client.read(skvbc.get_last_block_req(), corrupt_params=corrupt_params)
+        except trio.TooSlowError as e:
+            pass
 
+    async def read_n_times(self, bft_network, skvbc, num_reads, client=None):
+        for i in range(num_reads):
+            client = bft_network.random_client() if client == None else client
+            await client.read(skvbc.get_last_block_req())
+
+    async def write_n_times(self, bft_network, skvbc, num_writes, client=None):
+        for i in range(num_writes):
+            client = bft_network.random_client() if client == None else client
+            read_set = set()
+            write_set = self.writeset(skvbc, 2)
+            await client.write(skvbc.write_req(read_set, write_set, 0))
+
+    async def get_metrics(self, bft_network):
+        metrics = [{} for _ in range(bft_network.num_total_replicas())]
         for i in bft_network.all_replicas():
-            num_signatures_verified = await bft_network.get_metric(
-                i, bft_network, 'Counters', "external_client_request_signatures_verified", "signature_manager")
-            
-            assert num_signatures_verified == num_requests, \
-                f"Expected {num_requests} signature verifications for replica {i}. Received {num_signatures_verified}"
-            
-            verification_failures_participant_id = await bft_network.get_metric(
-                i, bft_network, 'Counters', "signature_verification_failed_on_unrecognized_participant_id", "signature_manager")
-            
-            assert verification_failures_participant_id == 0
+            metrics[i]["num_signatures_failed_verification"] = int(await bft_network.get_metric(
+                i, bft_network, 'Counters', "external_client_request_signature_verification_failed", "signature_manager"))
+            metrics[i]["num_signatures_failed_on_unrecognized_participant_id"] = int(await bft_network.get_metric(
+                i, bft_network, 'Counters', "signature_verification_failed_on_unrecognized_participant_id", "signature_manager"))
+            metrics[i]["num_signatures_verified"] = int(await bft_network.get_metric(
+                i, bft_network, 'Counters', "external_client_request_signatures_verified", "signature_manager"))
+        return metrics
 
-    async def assert_failed_metrics(self, bft_network, num_requests, cannot_sign=False):
-        
+    async def assert_metrics(self,
+                             bft_network,
+                             expected_num_signatures_verified=0,
+                             is_expected_signatures_failed_verification=False,
+                             is_expected_signatures_failed_on_unrecognized_participant_id=False):
+
+        metrics = await self.get_metrics(bft_network)
         for i in bft_network.all_replicas():
-            num_signatures_failed = await bft_network.get_metric(
-                i, bft_network, 'Counters', "external_client_request_signature_verification_failed", "signature_manager")
+            if expected_num_signatures_verified != None:
+                assert expected_num_signatures_verified == metrics[i]["num_signatures_verified"]
 
-            if cannot_sign:
-                assert num_signatures_failed == 0, \
-                f"Number of signatures failed ({num_signatures_failed}) should be 0, because no signing takes place"
-            else:
-                assert num_signatures_failed > 0, f"Number of signatures failed ({num_signatures_failed}) should be greater than 0"
-                assert num_signatures_failed > num_requests, \
-                    f"Number of signatures failed {num_signatures_failed} should be more than the number of requests {num_requests}"
+            if is_expected_signatures_failed_verification != None:
+                if is_expected_signatures_failed_verification:
+                    assert metrics[i]['num_signatures_failed_verification'] > 0
+                else:
+                    assert metrics[i]['num_signatures_failed_verification'] == 0
 
-            verification_failures_participant_id = await bft_network.get_metric(
-                i, bft_network, 'Counters', "signature_verification_failed_on_unrecognized_participant_id", "signature_manager")
-            
-            assert verification_failures_participant_id == 0
+            if is_expected_signatures_failed_on_unrecognized_participant_id != None:
+                if is_expected_signatures_failed_on_unrecognized_participant_id:
+                    assert metrics[i]["num_signatures_failed_on_unrecognized_participant_id"] > 0
+                else:
+                    assert metrics[i]["num_signatures_failed_on_unrecognized_participant_id"] == 0
+        return metrics
 
-    @unittest.skipIf(environ.get('TXN_SIGNING_ENABLED', "").lower() != "true", "Transaction Signing is disabled")
     @with_trio
     @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    async def test_positive_flow_on_read(self, bft_network):
+    async def test_positive_read(self, bft_network):
         """
         xxx
         """
-        NUM_OF_SEQ_READS = 1000 # This is the minimum amount to update the aggregator
+        NUM_OF_SEQ_READS = 1000  # This is the minimum amount to update the aggregator
         skvbc = await self.setup_skvbc(bft_network)
 
-        for i in range(NUM_OF_SEQ_READS):
-            client = bft_network.random_client()
-            await client.read(skvbc.get_last_block_req())
+        await self.read_n_times(bft_network, skvbc, NUM_OF_SEQ_READS)
 
-        await self.assert_verification_metrics(bft_network, NUM_OF_SEQ_READS)
+        # The exact number of verification is larger, due to unknown primary + double verification on pre-prepare on unknown-primary
+        # and the fact that we choose a random client which might have an unknown primary.
+        # since the "steps" between updates are of 1000 in the source code - we can ne sure for now on the exact metric value
+        await self.assert_metrics(bft_network, expected_num_signatures_verified=NUM_OF_SEQ_READS)
 
-    @unittest.skipIf(environ.get('TXN_SIGNING_ENABLED', "").lower() != "true", "Transaction Signing is disabled")
     @with_trio
     @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
     async def test_positive_write_pre_exec_disabled(self, bft_network):
         """
         xxx
         """
-        NUM_OF_SEQ_WRITES = 1000 # This is the minimum amount to update the aggregator
+        NUM_OF_SEQ_WRITES = 1000  # This is the minimum amount to update the aggregator
         skvbc = await self.setup_skvbc(bft_network)
 
-        for i in range(NUM_OF_SEQ_WRITES):
-            client = bft_network.random_client()
-            read_set = set()
-            write_set = self.writeset(skvbc, 2)
-            reply = await client.write(skvbc.write_req(read_set, write_set, 0))
+        await self.write_n_times(bft_network, skvbc, NUM_OF_SEQ_WRITES)
 
-        await self.assert_verification_metrics(bft_network, NUM_OF_SEQ_WRITES)
+        # The exact number of verification is larger, due to unknown primary + double verification on pre-prepare on unknown-primary
+        # and the fact that we choose a random client which might have an unknown primary.
+        # since the "steps" between updates are of 1000 in the source code - we can ne sure for now on the exact metric value
+        await self.assert_metrics(bft_network, expected_num_signatures_verified=NUM_OF_SEQ_WRITES)
 
-    @unittest.skipIf(environ.get('TXN_SIGNING_ENABLED', "").lower() != "true", "Transaction Signing is disabled")
+    # TODO TODO TODO TODO
+    # @with_trio
+    # @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
+    # async def test_positive_write_pre_exec_enabled(self, bft_network):
+    #     """
+    #     xxx
+    #     """
+
+    # TODO TODO TODO TODO
+    # @with_trio
+    # @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
+    # async def test_positive_write_batching_enabled(self, bft_network):
+    #     """
+    #     xxx
+    #     """
+
     @with_trio
     @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    async def test_negative_corrupt_signature(self, bft_network):
+    async def test_negative_corrupt_signature_and_msg(self, bft_network):
         """
         xxx
         """
         skvbc = await self.setup_skvbc(bft_network)
-
+        corrupt_dict = {"corrupt_signature": "", "corrupt_msg": "",
+                        "wrong_signature_length": "", "wrong_signature_length": ""}
         client = bft_network.random_client()
-        try:
-            await client.read(skvbc.get_last_block_req(), corrupt_params={"corrupt_signature", ""})
-        except trio.TooSlowError as e:
-            pass
 
-        await self.assert_failed_metrics(bft_network, 1)
+        for corrupt_pair in corrupt_dict:
+            await self.corrupted_write(bft_network, skvbc, corrupt_pair, client)
+            metrics1 = await self.assert_metrics(bft_network, expected_num_signatures_verified=None, is_expected_signatures_failed_verification=True)
 
-    @unittest.skipIf(environ.get('TXN_SIGNING_ENABLED', "").lower() != "true", "Transaction Signing is disabled")
-    @with_trio
-    @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    async def test_negative_corrupt_msg(self, bft_network):
-        """
-        xxx
-        """
-        await self.negative_tests_write(bft_network, {"corrupt_msg": ""})
-        await self.assert_failed_metrics(bft_network, 2)
+            await self.write_n_times(bft_network, skvbc, 1, client)
 
-    @unittest.skipIf(environ.get('TXN_SIGNING_ENABLED', "").lower() != "true", "Transaction Signing is disabled")
-    @with_trio
-    @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    async def test_negative_wrong_signature_length(self, bft_network):
-        """
-        xxx
-        """
-        await self.negative_tests_write(bft_network, {"wrong_signature_length": ""})
-        await self.assert_failed_metrics(bft_network, 2, cannot_sign=True)
+            await self.corrupted_write(bft_network, skvbc, corrupt_pair, client)
+            metrics2 = await self.assert_metrics(bft_network,
+                                                 expected_num_signatures_verified=None,
+                                                 is_expected_signatures_failed_verification=True)
 
-    @unittest.skipIf(environ.get('TXN_SIGNING_ENABLED', "").lower() != "true", "Transaction Signing is disabled")
-    @with_trio
-    @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    async def test_negative_wrong_msg_length(self, bft_network):
-        """
-        xxx
-        """
-        await self.negative_tests_write(bft_network, {"wrong_msg_length": ""})
-        await self.assert_failed_metrics(bft_network, 2)
+            for i in bft_network.all_replicas():
+                assert(metrics1[i]["num_signatures_failed_verification"] <
+                       metrics2[i]["num_signatures_failed_verification"])
+                assert(metrics1[i]["num_signatures_failed_on_unrecognized_participant_id"] ==
+                       metrics2[i]["num_signatures_failed_on_unrecognized_participant_id"])
+                assert(metrics1[i]["num_signatures_verified"] <
+                       metrics2[i]["num_signatures_verified"])
 
-    @unittest.skipIf(environ.get('TXN_SIGNING_ENABLED', "").lower() != "true", "Transaction Signing is disabled")
-    @with_trio
-    @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    async def test_negative_wrong_id_0(self, bft_network):
-        """
-        xxx
-        """
-        await self.negative_tests_write(bft_network, {"wrong_id": 0})
-        await self.assert_failed_metrics(bft_network, 2, cannot_sign=True)
+    # @with_trio
+    # @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
+    # async def test_negative_wrong_signature_length(self, bft_network):
+    #     """
+    #     xxx
+    #     """
+    #     await self.negative_tests_write(bft_network, {"wrong_signature_length": ""})
+    #     await self.assert_metrics(bft_network, expected_num_signatures_verified=1, is_expected_signatures_failed_verification=True)
 
-    @unittest.skipIf(environ.get('TXN_SIGNING_ENABLED', "").lower() != "true", "Transaction Signing is disabled")
-    @with_trio
-    @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    async def test_negative_wrong_id_1000(self, bft_network):
-        """
-        xxx
-        """
-        await self.negative_tests_write(bft_network, {"wrong_id": 1000})
-        await self.assert_failed_metrics(bft_network, 2, cannot_sign=True)
+    # @with_trio
+    # @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
+    # async def test_negative_wrong_msg_length(self, bft_network):
+    #     """
+    #     xxx
+    #     """
+    #     await self.negative_tests_write(bft_network, {"wrong_msg_length": ""})
+    #     await self.assert_metrics(bft_network, expected_num_signatures_verified=1, is_expected_signatures_failed_verification=True)
 
+    # @with_trio
+    # @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
+    # async def test_negative_wrong_client_id_as_replica_id(self, bft_network):
+    #     """
+    #     xxx
+    #     """
+    #     await self.negative_tests_write(bft_network, {"wrong_id": 0})
+    #     await self.assert_metrics(bft_network, expected_num_signatures_verified=1, is_expected_signatures_failed_verification=True)
+
+    #     # if "wrong_client_id_as_replica_id" in corrupt_params:
+    #     #     client_id = corrupt_params["wrong_client_id_as_replica_id"]
+    #     # if "wrong_client_id_as_unknown_id" in corrupt_params:
+    #     #     client_id = corrupt_params["wrong_client_id_as_unknown_id"]
+    #     # if "wrong_client_id_as_other_participant_client_id" in corrupt_params:
+    #     #     client_id = corrupt_params["wrong_client_id_as_other_participant_client_id"]
+
+    # @with_trio
+    # @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
+    # async def test_negative_wrong_client_id_as_unknown_id(self, bft_network):
+    #     """
+    #     xxx
+    #     """
+    #     await self.negative_tests_write(bft_network, {"wrong_id": 1000})
+    #     await self.assert_failed_metrics(bft_network, 2, cannot_sign=True)
+
+    # @with_trio
+    # @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
+    # async def test_negative_wrong_client_id_as_other_participant_client_id(self, bft_network):
+    #     """
+    #     xxx
+    #     """
+    #     await self.negative_tests_write(bft_network, {"wrong_id": 1000})
+    #     await self.assert_failed_metrics(bft_network, 2, cannot_sign=True)

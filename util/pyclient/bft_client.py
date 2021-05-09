@@ -177,7 +177,8 @@ class BftClient(ABC):
             signature = pkcs1_15.new(self.signing_key).sign(h)
             if corrupt_params:
                 msg, signature, client_id = self._corrupt_signing_params(msg, signature, client_id, corrupt_params)
-        
+        #print("*" * 50)
+        #print(f'sending seq_num={seq_num}')
         data = bft_msgs.pack_request(client_id, seq_num, read_only, self.config.req_timeout_milli, cid, msg,
                                     pre_process, reconfiguration=reconfiguration, signature=signature)
 
@@ -273,8 +274,10 @@ class BftClient(ABC):
             with trio.move_on_after(timeout):
                 async with trio.open_nursery() as nursery:
                     if read_only or self.primary is None:
+                        #print(f"sending to {dest_replicas} read_only={read_only} self.primary={self.primary}")
                         await self._send_to_replicas(data, dest_replicas)
                     else:
+                        #print("sending to primary read_only={read_only} self.primary={self.primary}")
                         await self._send_to_primary(data)
                     nursery.start_soon(self._recv_data, m_of_n_quorum.required, dest_replicas, nursery.cancel_scope)
             if self.replies is None:
@@ -323,6 +326,7 @@ class BftClient(ABC):
                     self.rsi_replies[r] = rsi_reply.get_rsi_data()
                     if r not in self.ro_replicas:
                         self.primary = self.replicas[rsi_reply.get_primary()]
+                        #print(f"primary is {self.primary}")
                 cancel_scope.cancel()
 
     def _get_txn_signing_priv_key_path(self, client_id):
@@ -366,8 +370,13 @@ class BftClient(ABC):
             pos = random.randint(1, len(signature)-2)
             val = signature[pos]
             signature = bytes(signature) + bytes([val])
-        if "wrong_id" in corrupt_params:
-            client_id = corrupt_params["wrong_id"]
+        if "wrong_client_id_as_replica_id" in corrupt_params:
+            client_id = corrupt_params["wrong_client_id_as_replica_id"]
+        if "wrong_client_id_as_unknown_id" in corrupt_params:
+            client_id = corrupt_params["wrong_client_id_as_unknown_id"]
+        if "wrong_client_id_as_other_participant_client_id" in corrupt_params:
+            client_id = corrupt_params["wrong_client_id_as_other_participant_client_id"]
+        
         
         return msg, signature, client_id
 
@@ -521,6 +530,7 @@ class TcpTlsClient(BftClient):
         stream = self.ssl_streams[dest_addr]
         try:
             await stream.send_all(out_buff)
+            #print(f"done sending to {dest_replica}")
             return True
         except (trio.BrokenResourceError, trio.ClosedResourceError):
             # Failed! close the stream and return failure.
