@@ -54,7 +54,7 @@ class SkvbcTestClientTxnSigning(unittest.TestCase):
     @unittest.skipIf(environ.get('TXN_SIGNING_ENABLED', "").lower() != "true", "Transaction Signing is disabled")
     @with_trio
     @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    async def test_happy_flow_on_read(self, bft_network):
+    async def test_positive_flow_on_read(self, bft_network):
         """
         xxx
         """
@@ -79,7 +79,7 @@ class SkvbcTestClientTxnSigning(unittest.TestCase):
     @unittest.skipIf(environ.get('TXN_SIGNING_ENABLED', "").lower() != "true", "Transaction Signing is disabled")
     @with_trio
     @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    async def test_happy_write(self, bft_network):
+    async def test_positive_write_pre_exec_disabled(self, bft_network):
         """
         xxx
         """
@@ -104,7 +104,7 @@ class SkvbcTestClientTxnSigning(unittest.TestCase):
     @unittest.skipIf(environ.get('TXN_SIGNING_ENABLED', "").lower() != "true", "Transaction Signing is disabled")
     @with_trio
     @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    async def test_negative_corrupt_key(self, bft_network):
+    async def test_negative_corrupted_signature(self, bft_network):
         """
         xxx
         """
@@ -115,7 +115,10 @@ class SkvbcTestClientTxnSigning(unittest.TestCase):
 
         for i in range(NUM_OF_SEQ_READS):
             client = bft_network.random_client()
-            await client.read(skvbc.get_last_block_req(), corrupt_params=['corrupt_key'])
+            try:
+                await client.read(skvbc.get_last_block_req(), corrupt_params=['corrupted_signature'])
+            except trio.TooSlowError as e:
+                pass
 
         for i in bft_network.all_replicas():
             num_signatures_failed = await bft_network.get_metric(

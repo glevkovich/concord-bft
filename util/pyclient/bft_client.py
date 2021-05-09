@@ -24,6 +24,7 @@ import bft_msgs
 import replica_specific_info as RSI
 from bft_config import bft_msg_port_from_node_id
 from abc import ABC, abstractmethod
+import random as r
 
 class ReqSeqNum:
     def __init__(self):
@@ -172,13 +173,18 @@ class BftClient(ABC):
         signature = b''
         if self.signing_key:
             h = SHA256.new(msg)
-            if 'corrupt_key' in corrupt_params:
-                self.signing_key = RSA.generate(2048)
-            if 'corrupt_msg' in corrupt_params:
-                h = SHA256.new(b'compute hash with corrupt message')
             signature = pkcs1_15.new(self.signing_key).sign(h)
-
-        data = bft_msgs.pack_request(self.client_id, seq_num, read_only, self.config.req_timeout_milli, cid, msg,
+            if 'corrupted_signature' in corrupt_params:
+                pos = r.randint(1, len(signature)-2)
+                val = signature[pos] + 1
+                signature = bytes(signature[0:pos]) + bytes([val]) + bytes(signature[pos+1:])
+            if 'corrupt_msg' in corrupt_params:
+                pos = r.randint(1, len(msg)-2)
+                val = msg[pos] + 1
+                msg = bytes(msg[0:pos]) + bytes([val]) + bytes(msg[pos+1:])
+        client_id = self.client_id
+        
+        data = bft_msgs.pack_request(client_id, seq_num, read_only, self.config.req_timeout_milli, cid, msg,
                                     pre_process, reconfiguration=reconfiguration, signature=signature)
 
         if m_of_n_quorum is None:
