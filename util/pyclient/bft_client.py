@@ -16,6 +16,7 @@ import trio
 import time
 import ssl
 import os
+import random
 from Crypto.PublicKey import RSA
 from Crypto.Hash import SHA256
 from Crypto.Signature import pkcs1_15
@@ -24,7 +25,6 @@ import bft_msgs
 import replica_specific_info as RSI
 from bft_config import bft_msg_port_from_node_id
 from abc import ABC, abstractmethod
-import random as r
 
 class ReqSeqNum:
     def __init__(self):
@@ -128,17 +128,17 @@ class BftClient(ABC):
     def get_total_num_replicas(self):
         return len(self.replicas)
 
-    async def write(self, msg, seq_num=None, cid=None, pre_process=False, m_of_n_quorum=None, reconfiguration=False, corrupt_params=[]):
+    async def write(self, msg, seq_num=None, cid=None, pre_process=False, m_of_n_quorum=None, reconfiguration=False, corrupt_params={}):
         """ A wrapper around sendSync for requests that mutate state """
         return await self.sendSync(msg, False, seq_num, cid, pre_process, m_of_n_quorum, reconfiguration, corrupt_params=corrupt_params)
 
-    async def read(self, msg, seq_num=None, cid=None, m_of_n_quorum=None, reconfiguration=False, include_ro=False, corrupt_params=[]):
+    async def read(self, msg, seq_num=None, cid=None, m_of_n_quorum=None, reconfiguration=False, include_ro=False, corrupt_params={}):
         """ A wrapper around sendSync for requests that do not mutate state """
         return await self.sendSync(msg, True, seq_num, cid, m_of_n_quorum=m_of_n_quorum, \
             reconfiguration=reconfiguration, include_ro=include_ro, corrupt_params=corrupt_params)
 
     async def sendSync(self, msg, read_only, seq_num=None, cid=None, pre_process=False, m_of_n_quorum=None, \
-        reconfiguration=False, include_ro=False, corrupt_params=[]):
+        reconfiguration=False, include_ro=False, corrupt_params={}):
         """
         Send a client request and wait for a m_of_n_quorum (if None, it will set to 2F+C+1 quorum) of replies.
 
@@ -171,18 +171,12 @@ class BftClient(ABC):
             cid = str(seq_num)
 
         signature = b''
+        client_id = self.client_id
         if self.signing_key:
             h = SHA256.new(msg)
             signature = pkcs1_15.new(self.signing_key).sign(h)
-            if 'corrupted_signature' in corrupt_params:
-                pos = r.randint(1, len(signature)-2)
-                val = signature[pos] + 1
-                signature = bytes(signature[0:pos]) + bytes([val]) + bytes(signature[pos+1:])
-            if 'corrupt_msg' in corrupt_params:
-                pos = r.randint(1, len(msg)-2)
-                val = msg[pos] + 1
-                msg = bytes(msg[0:pos]) + bytes([val]) + bytes(msg[pos+1:])
-        client_id = self.client_id
+            if corrupt_params:
+                msg, signature, client_id = self._corrupt_signing_params(msg, signature, client_id, corrupt_params)
         
         data = bft_msgs.pack_request(client_id, seq_num, read_only, self.config.req_timeout_milli, cid, msg,
                                     pre_process, reconfiguration=reconfiguration, signature=signature)
@@ -353,6 +347,29 @@ class BftClient(ABC):
             raise AttributeError("Bft configs txn_signing_keys_path and principals_to_participant_map should be set/unset at the same time")
 
         return key_path
+
+    def _corrupt_signing_params(self, msg, signature, client_id, corrupt_params={}):
+
+        if "corrupt_msg" in corrupt_params:
+            pos = random.randint(1, len(msg)-2)
+            val = msg[pos] + 1
+            msg = bytes(msg[0:pos]) + bytes([val]) + bytes(msg[pos+1:])
+        if "corrupt_signature" in corrupt_params:
+            pos = random.randint(1, len(signature)-2)
+            val = signature[pos] + 1
+            signature = bytes(signature[0:pos]) + bytes([val]) + bytes(signature[pos+1:])
+        if "wrong_msg_length" in corrupt_params:
+            pos = random.randint(1, len(msg)-2)
+            val = msg[pos]
+            msg = bytes(msg) + bytes([val])
+        if "wrong_signature_length" in corrupt_params:
+            pos = random.randint(1, len(signature)-2)
+            val = signature[pos]
+            signature = bytes(signature) + bytes([val])
+        if "wrong_id" in corrupt_params:
+            client_id = corrupt_params["wrong_id"]
+        
+        return msg, signature, client_id
 
 class UdpClient(BftClient):
     """
