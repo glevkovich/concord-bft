@@ -85,12 +85,28 @@ class SkvbcTestClientTxnSigning(unittest.TestCase):
             client = bft_network.random_client() if client == None else client
             await client.read(skvbc.get_last_block_req())
 
-    async def write_n_times(self, bft_network, skvbc, num_writes, client=None):
+    async def write_n_times(self, bft_network, skvbc, num_writes, client=None, pre_exec=False):
         for i in range(num_writes):
             client = bft_network.random_client() if client == None else client
             read_set = set()
             write_set = self.writeset(skvbc, 2)
-            await client.write(skvbc.write_req(read_set, write_set, 0))
+            await client.write(skvbc.write_req(read_set, write_set, 0), pre_process=pre_exec)
+
+    async def send_batch_write_with_pre_execution(self, skvbc, bft_network, num_writes, batch_size, client=None, long_exec=False):
+        num_batches = num_writes//batch_size
+        msg_batch = []
+        batch_seq_nums = []
+        client = bft_network.random_client() if client == None else client
+        for i in range(num_batches):
+            for j in range(batch_size):
+                readset = set()
+                writeset = self.writeset(skvbc, 2)
+                msg_batch.append(skvbc.write_req(readset, writeset, 0, long_exec))
+                seq_num = client.req_seq_num.next()
+                batch_seq_nums.append(seq_num)
+        replies = await client.write_batch(msg_batch, batch_seq_nums)
+        for seq_num, reply_msg in replies.items():
+            self.assertTrue(skvbc.parse_reply(reply_msg.get_common_data()).success)
 
     async def get_metrics(self, bft_network):
         metrics = [{} for _ in range(bft_network.num_total_replicas())]
@@ -112,13 +128,16 @@ class SkvbcTestClientTxnSigning(unittest.TestCase):
         metrics = await self.get_metrics(bft_network)
         for i in bft_network.all_replicas():
             if expected_num_signatures_verified != None:
-                assert expected_num_signatures_verified == metrics[i]["num_signatures_verified"]
+                assert expected_num_signatures_verified == metrics[i]["num_signatures_verified"], \
+                    f"expected_num_signatures_verified={expected_num_signatures_verified}; actual={metrics[i]['num_signatures_verified']}"
 
             if is_expected_signatures_failed_verification != None:
                 if is_expected_signatures_failed_verification:
-                    assert metrics[i]['num_signatures_failed_verification'] > 0
+                    assert metrics[i]['num_signatures_failed_verification'] > 0, \
+                    f"num_signatures_failed_verification={metrics[i]['num_signatures_failed_verification']}"
                 else:
-                    assert metrics[i]['num_signatures_failed_verification'] == 0
+                    assert metrics[i]['num_signatures_failed_verification'] == 0, \
+                        f"num_signatures_failed_verification={metrics[i]['num_signatures_failed_verification']}"
 
             if is_expected_signatures_failed_on_unrecognized_participant_id != None:
                 if is_expected_signatures_failed_on_unrecognized_participant_id:
@@ -159,21 +178,34 @@ class SkvbcTestClientTxnSigning(unittest.TestCase):
         # since the "steps" between updates are of 1000 in the source code - we can ne sure for now on the exact metric value
         await self.assert_metrics(bft_network, expected_num_signatures_verified=NUM_OF_SEQ_WRITES)
 
-    # TODO TODO TODO TODO
-    # @with_trio
-    # @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    # async def test_positive_write_pre_exec_enabled(self, bft_network):
-    #     """
-    #     xxx
-    #     """
+    # TODO - NOT WORKING
+    @with_trio
+    @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
+    async def test_positive_write_pre_exec_enabled(self, bft_network):
+        """
+        xxx
+        """
+        NUM_OF_SEQ_WRITES = 1000  # This is the minimum amount to update the aggregator
+        skvbc = await self.setup_skvbc(bft_network)
 
-    # TODO TODO TODO TODO
-    # @with_trio
-    # @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    # async def test_positive_write_batching_enabled(self, bft_network):
-    #     """
-    #     xxx
-    #     """
+        await self.write_n_times(bft_network, skvbc, NUM_OF_SEQ_WRITES, pre_exec=True)
+        await self.assert_metrics(bft_network, expected_num_signatures_verified=NUM_OF_SEQ_WRITES)
+
+    # TODO - NOT WORKING
+    @with_trio
+    @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
+    async def test_positive_write_batching_enabled(self, bft_network):
+        """
+        xxx
+        """
+        NUM_OF_SEQ_WRITES = 1000  # This is the minimum amount to update the aggregator
+        skvbc = await self.setup_skvbc(bft_network)
+        await self.send_batch_write_with_pre_execution(skvbc, bft_network, NUM_OF_SEQ_WRITES, 4, long_exec=False)
+
+        # The exact number of verification is larger, due to unknown primary + double verification on pre-prepare on unknown-primary
+        # and the fact that we choose a random client which might have an unknown primary.
+        # since the "steps" between updates are of 1000 in the source code - we can ne sure for now on the exact metric value
+        await self.assert_metrics(bft_network, expected_num_signatures_verified=NUM_OF_SEQ_WRITES)
 
     @with_trio
     @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
@@ -183,7 +215,7 @@ class SkvbcTestClientTxnSigning(unittest.TestCase):
         """
         skvbc = await self.setup_skvbc(bft_network)
         corrupt_dict = {"corrupt_signature": "", "corrupt_msg": "",
-                        "wrong_signature_length": "", "wrong_signature_length": ""}
+                        "wrong_signature_length": "", "wrong_msg_length": ""}
         client = bft_network.random_client()
 
         for corrupt_pair in corrupt_dict:
@@ -198,61 +230,70 @@ class SkvbcTestClientTxnSigning(unittest.TestCase):
                                                  is_expected_signatures_failed_verification=True)
 
             for i in bft_network.all_replicas():
+                assert(metrics1[i]["num_signatures_failed_verification"] <=
+                       metrics2[i]["num_signatures_failed_verification"])
+                assert(metrics1[i]["num_signatures_failed_on_unrecognized_participant_id"] ==
+                       metrics2[i]["num_signatures_failed_on_unrecognized_participant_id"])
+                assert(metrics1[i]["num_signatures_verified"] <=
+                       metrics2[i]["num_signatures_verified"])
+
+    @with_trio
+    @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
+    async def test_negative_wrong_client_id(self, bft_network):
+        """
+        xxx
+        """
+        skvbc = await self.setup_skvbc(bft_network)
+        client = bft_network.random_client()
+        corrupt_dict = {"wrong_client_id_as_replica_id": 0,
+                        "wrong_client_id_as_unknown_id": 10000}
+        
+        for k, v in corrupt_dict.items():
+            await self.corrupted_write(bft_network, skvbc, {k:v}, client)
+            metrics1 = await self.assert_metrics(bft_network, expected_num_signatures_verified=None)
+
+            await self.write_n_times(bft_network, skvbc, 1, client)
+
+            await self.corrupted_write(bft_network, skvbc, {k:v}, client)
+            metrics2 = await self.assert_metrics(bft_network, expected_num_signatures_verified=None)
+
+            for i in bft_network.all_replicas():
+                assert(metrics1[i]["num_signatures_failed_verification"] ==
+                       metrics2[i]["num_signatures_failed_verification"])
+                assert(metrics1[i]["num_signatures_failed_on_unrecognized_participant_id"] ==
+                       metrics2[i]["num_signatures_failed_on_unrecognized_participant_id"])
+                assert(metrics1[i]["num_signatures_verified"] ==
+                       metrics2[i]["num_signatures_verified"])
+
+    @with_trio
+    @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
+    async def test_negative_wrong_client_id_as_other_participant_client_id(self, bft_network):
+        """
+        xxx
+        """
+        clients = bft_network.random_clients(2)
+        skvbc = await self.setup_skvbc(bft_network)
+        client, client2 = clients
+        assert client.client_id != client2.client_id
+        corrupt_dict = {"wrong_client_id_as_other_participant_client_id": client2.client_id}
+
+        for k, v in corrupt_dict.items():
+            await self.corrupted_write(bft_network, skvbc, {k:v}, client)
+            metrics1 = await self.assert_metrics(bft_network,
+                                                 expected_num_signatures_verified=None,
+                                                 is_expected_signatures_failed_verification=True)
+
+            await self.write_n_times(bft_network, skvbc, 1, client)
+
+            await self.corrupted_write(bft_network, skvbc, {k:v}, client)
+            metrics2 = await self.assert_metrics(bft_network,
+                                                 expected_num_signatures_verified=None,
+                                                 is_expected_signatures_failed_verification=True)
+
+            for i in bft_network.all_replicas():
                 assert(metrics1[i]["num_signatures_failed_verification"] <
                        metrics2[i]["num_signatures_failed_verification"])
                 assert(metrics1[i]["num_signatures_failed_on_unrecognized_participant_id"] ==
                        metrics2[i]["num_signatures_failed_on_unrecognized_participant_id"])
                 assert(metrics1[i]["num_signatures_verified"] <
                        metrics2[i]["num_signatures_verified"])
-
-    # @with_trio
-    # @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    # async def test_negative_wrong_signature_length(self, bft_network):
-    #     """
-    #     xxx
-    #     """
-    #     await self.negative_tests_write(bft_network, {"wrong_signature_length": ""})
-    #     await self.assert_metrics(bft_network, expected_num_signatures_verified=1, is_expected_signatures_failed_verification=True)
-
-    # @with_trio
-    # @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    # async def test_negative_wrong_msg_length(self, bft_network):
-    #     """
-    #     xxx
-    #     """
-    #     await self.negative_tests_write(bft_network, {"wrong_msg_length": ""})
-    #     await self.assert_metrics(bft_network, expected_num_signatures_verified=1, is_expected_signatures_failed_verification=True)
-
-    # @with_trio
-    # @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    # async def test_negative_wrong_client_id_as_replica_id(self, bft_network):
-    #     """
-    #     xxx
-    #     """
-    #     await self.negative_tests_write(bft_network, {"wrong_id": 0})
-    #     await self.assert_metrics(bft_network, expected_num_signatures_verified=1, is_expected_signatures_failed_verification=True)
-
-    #     # if "wrong_client_id_as_replica_id" in corrupt_params:
-    #     #     client_id = corrupt_params["wrong_client_id_as_replica_id"]
-    #     # if "wrong_client_id_as_unknown_id" in corrupt_params:
-    #     #     client_id = corrupt_params["wrong_client_id_as_unknown_id"]
-    #     # if "wrong_client_id_as_other_participant_client_id" in corrupt_params:
-    #     #     client_id = corrupt_params["wrong_client_id_as_other_participant_client_id"]
-
-    # @with_trio
-    # @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    # async def test_negative_wrong_client_id_as_unknown_id(self, bft_network):
-    #     """
-    #     xxx
-    #     """
-    #     await self.negative_tests_write(bft_network, {"wrong_id": 1000})
-    #     await self.assert_failed_metrics(bft_network, 2, cannot_sign=True)
-
-    # @with_trio
-    # @with_bft_network(start_replica_cmd, selected_configs=lambda n, f, c: n == 7)
-    # async def test_negative_wrong_client_id_as_other_participant_client_id(self, bft_network):
-    #     """
-    #     xxx
-    #     """
-    #     await self.negative_tests_write(bft_network, {"wrong_id": 1000})
-    #     await self.assert_failed_metrics(bft_network, 2, cannot_sign=True)
