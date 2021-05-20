@@ -29,6 +29,9 @@
 #include "bftclient/bft_client.h"
 #include "bftclient/fake_comm.h"
 #include "msg_receiver.h"
+#include "secrets_manager_plain.h"
+#include "histogram.hpp"
+#include "misc.hpp"
 
 using namespace std;
 using namespace bft::client;
@@ -511,7 +514,47 @@ TEST_F(ClientApiTestFixture, write_f_plus_one_get_differnt_rsi) {
   client.stop();
 }
 
-int main(int argc, char* argv[]) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
+#define KB 1024
+#define MB KB* KB
+
+TEST_F(ClientApiTestFixture, xxx) {
+  unique_ptr<FakeCommunication> comm(new FakeCommunication(RetryBehavior{test_config_.all_replicas}));
+  std::optional<bftEngine::impl::RSASigner> signer;
+  std::optional<std::string> key_plaintext;
+  SecretsManagerPlain smp;
+
+  concordUtils::Histogram hg;
+  hg.Clear();
+
+  ostringstream cmd, file_path;
+  cmd << KEYS_GEN_SCRIPT_PATH << " -n 1 -r " << PRIV_KEY_NAME << " -u " << PUB_KEY_NAME << " -o "
+      << KEYS_BASE_PARENT_PATH;
+  ASSERT_EQ(0, system(cmd.str().c_str()));
+  auto out = string(KEYS_BASE_PATH) + "/1/";  // return keypair path for a single participant
+  file_path << out << PRIV_KEY_NAME;
+  test_config_.transaction_signing_private_key_file_path = file_path.str();
+  key_plaintext = smp.decryptFile(file_path.str());
+  signer = RSASigner(key_plaintext.value().c_str(), KeyFormat::PemFormat);
+
+  char* buff = new char[1048576 * 32];
+  char buff1[1000];
+
+  using Clock = std::chrono::system_clock;
+  using Duration = Clock::duration;
+  std::cout << Duration::period::num << " , " << Duration::period::den << '\n';
+
+  std::vector<int> sizes = {
+      1, 32, 512, 1 * KB, 64 * KB, 128 * KB, 512 * KB, 1 * MB, 2 * MB, 4 * MB, 8 * MB, 16 * MB, 32 * MB};
+  for (auto i : sizes) {
+    hg.Clear();
+    for (int j = 0; j < 100; j++) {
+      size_t len;
+      auto t1 = get_monotonic_time();
+      signer->sign(buff, i, buff1, 1000, len);
+      hg.Add(get_monotonic_time() - t1);
+    }
+
+    std::cout << "size " << i << ":" << std::endl << hg.ToString() << std::endl << std::flush;
+  }
+  delete[] buff;
 }

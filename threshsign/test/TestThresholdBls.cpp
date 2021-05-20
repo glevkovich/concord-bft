@@ -33,30 +33,19 @@
 
 #include "app/RelicMain.h"
 
+#include "histogram.hpp"
+#include "misc.hpp"
+
+concordUtils::Histogram hg;
 using namespace std;
 using namespace BLS::Relic;
+
+#define KB 1024
+#define MB KB* KB
 
 int RelicAppMain(const Library& lib, const std::vector<std::string>& args) {
   (void)args;
   (void)lib;
-
-  std::vector<std::pair<int, int>> nk = {{1, 1},
-                                         {2, 1},
-                                         {3, 2},
-                                         {3, 3},
-                                         {5, 3},
-                                         {5, 4},
-                                         {10, 4},
-                                         {11, 7},
-                                         {11, 11},
-                                         {33, 17},
-                                         {33, 32},
-                                         {64, 33},
-                                         {128, 65},
-                                         {257, 129},
-                                         {260, 159},
-                                         {257, 257},
-                                         {276, 275}};
 
   //    std::vector<std::pair<int, int>> nk;
   //	for(size_t i = 1; i <= 301; i += 1) {
@@ -65,23 +54,27 @@ int RelicAppMain(const Library& lib, const std::vector<std::string>& args) {
 
   BLS::Relic::BlsPublicParameters params(BLS::Relic::PublicParametersFactory::getWhatever());
 
-  const char* msg = "blaBlaBlaBlaBlaBlaBlaBlaBlaBlaBlaBlaBlaBlaBlaBlaBla";
-  for (bool multisig : {true, false}) {
-    LOG_INFO(THRESHSIGN_LOG, "");
-    LOG_INFO(THRESHSIGN_LOG, "Testing threshold signatures (useMultisig = " << multisig << ")");
-    LOG_INFO(THRESHSIGN_LOG, "");
+  char* msg = new char[1048576 * 32];
 
-    for (auto it = nk.begin(); it != nk.end(); it++) {
-      int n = it->first;
-      int k = it->second;
-      (void)n;
-      (void)k;
+  using Clock = std::chrono::system_clock;
+  using Duration = Clock::duration;
+  std::cout << Duration::period::num << " , " << Duration::period::den << '\n';
 
-      ThresholdBlsTest t(params, n, k, multisig);
-      t.generateKeys();
-      t.test(reinterpret_cast<const unsigned char*>(msg), static_cast<int>(strlen(msg)));
+  std::vector<int> sizes = {
+      1, 32, 512, 1 * KB, 64 * KB, 128 * KB, 512 * KB, 1 * MB, 2 * MB, 4 * MB, 8 * MB, 16 * MB, 32 * MB};
+  for (bool multisig : {false}) {
+    for (auto i : sizes) {
+      LOG_INFO(BLS_LOG, "============================================== " << KVLOG(multisig, i));
+      ThresholdBlsTest t(params, 1, 1, multisig);
+      hg.Clear();
+      for (int ii = 0; ii < 100; ++ii) {
+        t.generateKeys();
+        t.test(reinterpret_cast<const unsigned char*>(msg), static_cast<int>(i));
+      }
+      std::cout << "size " << i << ":" << std::endl << hg.ToString() << std::endl << std::flush;
     }
   }
 
+  delete[] msg;
   return 0;
 }

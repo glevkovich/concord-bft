@@ -25,11 +25,14 @@
 #include "Utils.h"
 #include "AutoBuf.h"
 #include "XAssert.h"
+#include "histogram.hpp"
+#include "misc.hpp"
 
 #pragma once
 
 using std::endl;
 
+extern concordUtils::Histogram hg;
 template <class GroupType,
           class PublicParameters,
           class ThresholdAccumulator,
@@ -83,8 +86,8 @@ class ThresholdViabilityTest {
     testAssertNotNull(verif);
     testAssertNotNull(verifier());
 
-    LOG_INFO(THRESHSIGN_LOG,
-             "Testing " << typeid(params).name() << " on " << reqSigners << " out of " << numSigners << " signers");
+    LOG_TRACE(THRESHSIGN_LOG,
+              "Testing " << typeid(params).name() << " on " << reqSigners << " out of " << numSigners << " signers");
     GroupType h = hashMessage(msg, msgSize);
 
     VectorOfShares signers;
@@ -132,6 +135,7 @@ class ThresholdViabilityTest {
 
       for (ShareID i = signers.first(); signers.isEnd(i) == false; i = signers.next(i)) {
         testAssertNotNull(signer(i));
+        auto t1 = get_monotonic_time();
         int shareLen = signer(i)->requiredLengthForSignedData();
         AutoCharBuf shareBuf(shareLen);
         signer(i)->signData(reinterpret_cast<const char*>(msg), msgSize, shareBuf, shareLen);
@@ -142,6 +146,7 @@ class ThresholdViabilityTest {
           LOG_TRACE(THRESHSIGN_LOG, "Calling setExpectedDigest() after adding share " << i);
           shareAccum->setExpectedDigest(msg, msgSize);
         }
+        hg.Add(get_monotonic_time() - t1);
       }
 
       checkThresholdSignature(msg, msgSize);

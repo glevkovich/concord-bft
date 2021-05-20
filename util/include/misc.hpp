@@ -19,7 +19,7 @@ inline uint64_t get_monotonic_time() {
   std::chrono::steady_clock::time_point curTimePoint = std::chrono::steady_clock::now();
 
   auto timeSinceEpoch = curTimePoint.time_since_epoch();
-  uint64_t micro = std::chrono::duration_cast<std::chrono::microseconds>(timeSinceEpoch).count();
+  uint64_t micro = (uint64_t)(std::chrono::duration_cast<std::chrono::microseconds>(timeSinceEpoch).count());
 
   return micro;
 }
