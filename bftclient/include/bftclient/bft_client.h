@@ -26,6 +26,7 @@
 #include "metrics.h"
 #include "diagnostics.h"
 #include "bftengine/Crypto.hpp"
+#include "thread_pool.hpp"
 
 namespace bft::client {
 
@@ -77,7 +78,11 @@ class Client {
   // data, we construct them here, rather than relying on the type constructors embedded into the
   // bftEngine impl. This allows us to not have to link with the bftengine library, and also allows us
   // to return the messages as vectors with proper RAII based memory management.
-  Msg createClientMsg(const RequestConfig& req_config, Msg&& request, bool read_only, uint16_t client_id);
+  Msg createClientMsg(const RequestConfig& req_config,
+                      Msg&& request,
+                      bool read_only,
+                      uint16_t client_id,
+                      std::vector<std::future<void>>& futures);
 
   // This function creates a ClientBatchRequestMsg.
   Msg createClientBatchMsg(const std::deque<Msg>& client_requests,
@@ -88,6 +93,8 @@ class Client {
   Msg initBatch(std::deque<WriteRequest>& write_requests,
                 const std::string& cid,
                 std::chrono::milliseconds& max_time_to_wait);
+
+  void onSigningCompleted();
 
   MsgReceiver receiver_;
 
@@ -140,6 +147,8 @@ class Client {
   static constexpr uint32_t count_between_snapshots = 200;
   uint32_t snapshot_index_ = 0;
   std::unique_ptr<Recorders> histograms_;
+
+  concord::util::ThreadPool signers_pool_;
 };
 
 }  // namespace bft::client

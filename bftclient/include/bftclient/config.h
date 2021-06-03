@@ -66,6 +66,7 @@ struct ClientConfig {
   uint16_t f_val;
   uint16_t c_val;
   RetryTimeoutConfig retry_timeout_config;
+  uint8_t max_in_batch;
   std::optional<std::string> transaction_signing_private_key_file_path = std::nullopt;
   std::optional<concord::secretsmanager::SecretData> secrets_manager_config = std::nullopt;
 };

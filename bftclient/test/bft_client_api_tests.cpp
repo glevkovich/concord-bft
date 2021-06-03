@@ -58,6 +58,7 @@ class ClientApiTestFixture : public ::testing::Test {
                                1,
                                0,
                                RetryTimeoutConfig{},
+                               1,
                                nullopt};
 
   // Just print all received messages from a client
@@ -68,7 +69,7 @@ class ClientApiTestFixture : public ::testing::Test {
 
 // parametrzied fixture
 class ClientApiTestParametrizedFixture : public ClientApiTestFixture,
-                                         public testing::WithParamInterface<tuple<bool, bool, string>> {
+                                         public testing::WithParamInterface<tuple<bool, bool, string, bool>> {
  public:
   static void SetUpTestSuite() { srand(time(NULL)); }
   void SetUp() {
@@ -144,17 +145,7 @@ class ClientApiTestParametrizedFixture : public ClientApiTestFixture,
     out = GetSecretData();  // return secret data
   }
 
-  unique_ptr<RSAVerifier> transaction_verifier_;
-  bool corrupt_request_ = false;
-};
-
-// Parameterized test - see INSTANTIATE_TEST_CASE_P for input vector
-TEST_P(ClientApiTestParametrizedFixture, print_received_messages_and_timeout) {
-  bool sign_transaction = get<0>(GetParam());
-  bool is_priv_key_encrypted = get<1>(GetParam());
-  const string& scenario = get<2>(GetParam());
-
-  if (sign_transaction) {
+  void InitTxSigning(bool is_priv_key_encrypted) {
     // generate keypair, set test_config_ with path for the actual client code to load the RSASigner
     ostringstream file_path;
     string keypair_path;
@@ -177,11 +168,51 @@ TEST_P(ClientApiTestParametrizedFixture, print_received_messages_and_timeout) {
     string public_key_full_path({keypair_path + PUB_KEY_NAME});
     transaction_verifier_ = unique_ptr<RSAVerifier>(new RSAVerifier(public_key_full_path));
   }
+  unique_ptr<RSAVerifier> transaction_verifier_;
+  bool corrupt_request_ = false;
+};
+
+// Parameterized test - see INSTANTIATE_TEST_CASE_P for input vector
+TEST_P(ClientApiTestParametrizedFixture, print_received_messages_and_timeout) {
+  const auto BatchBehavior = [&](const MsgFromClient& msg, IReceiver* client_receiver) {
+    const auto* req_header = reinterpret_cast<const ClientBatchRequestMsgHeader*>(msg.data.data());
+    auto* position = msg.data.data();
+    position += sizeof(ClientBatchRequestMsgHeader) + req_header->cidSize;
+    string reply_data = "world";
+    auto reply_header_size = sizeof(ClientReplyMsgHeader);
+    Msg reply(reply_header_size + reply_data.size());
+
+    auto* reply_header = reinterpret_cast<ClientReplyMsgHeader*>(reply.data());
+    reply_header->currentPrimaryId = 0;
+    reply_header->msgType = REPLY_MSG_TYPE;
+    reply_header->replicaSpecificInfoLength = 0;
+    reply_header->replyLength = reply_data.size();
+    for (uint32_t i = 0; i < req_header->numOfMessagesInBatch; i++) {
+      const auto* req_header1 = reinterpret_cast<const ClientRequestMsgHeader*>(position);
+      reply_header->reqSeqNum = req_header1->reqSeqNum;
+      reply_header->spanContextSize = 0;
+      // Copy the reply data;
+      memcpy(reply.data() + reply_header_size, reply_data.data(), reply_data.size());
+      client_receiver->onNewMessage((NodeNum)msg.destination.val, (const char*)reply.data(), reply.size());
+      position += sizeof(ClientRequestMsgHeader) + req_header1->cidLength + req_header1->requestLength +
+                  req_header1->spanContextSize + req_header1->reqSignatureLength;
+    }
+  };
+  bool sign_transaction = get<0>(GetParam());
+  bool is_priv_key_encrypted = get<1>(GetParam());
+  const string& scenario = get<2>(GetParam());
+  bool send_batch = get<3>(GetParam());
+
+  if (sign_transaction) {
+    InitTxSigning(is_priv_key_encrypted);
+  }
   unique_ptr<FakeCommunication> comm;
   if (sign_transaction) {
-    if (scenario == "happy_flow")
+    if (scenario == "happy_flow" && !send_batch)
       comm = make_unique<FakeCommunication>(
           bind(&ClientApiTestParametrizedFixture::PrintAndVerifySignatureBehavior, this, _1, _2));
+    else if (scenario == "happy_flow" && send_batch)
+      comm.reset(new FakeCommunication(BatchBehavior));
     else if (scenario == "corrupt_in_dest") {
       comm = make_unique<FakeCommunication>(
           bind(&ClientApiTestParametrizedFixture::PrintAndFailVerifySignatureBehavior, this, _1, _2));
@@ -189,27 +220,51 @@ TEST_P(ClientApiTestParametrizedFixture, print_received_messages_and_timeout) {
     }
   } else
     comm = make_unique<FakeCommunication>(bind(&ClientApiTestParametrizedFixture::PrintBehavior, this, _1, _2));
-
   ASSERT_TRUE(comm);
-  Client client(move(comm), test_config_);
-  ReadConfig read_config{RequestConfig{false, 1}, All{}};
-  read_config.request.timeout = 500ms;
-  ASSERT_THROW(client.send(read_config, Msg({1, 2, 3, 4, 5})), TimeoutException);
-  client.stop();
+
+  if (send_batch) {
+    // Check concurrency
+    WriteConfig config{RequestConfig{false, 1}, ByzantineSafeQuorum{}};
+    WriteConfig config2{RequestConfig{false, 2}, ByzantineSafeQuorum{}};
+    config.request.timeout = 500ms;
+    config2.request.timeout = 500ms;
+    WriteRequest request1{config, Msg({'c', 'o', 'n', 'c', 'o', 'r', 'd'})};
+    WriteRequest request2{config2, Msg({'h', 'e', 'l', 'l', 'o'})};
+    std::deque<WriteRequest> request_queue;
+    request_queue.push_back(request1);
+    request_queue.push_back(request2);
+    test_config_.max_in_batch = request_queue.size() + 1;
+    Client client(move(comm), test_config_);
+    auto replies = client.sendBatch(request_queue, request1.config.request.correlation_id);
+    Msg expected{'w', 'o', 'r', 'l', 'd'};
+    ASSERT_EQ(replies.size(), request_queue.size());
+    ASSERT_EQ(expected, replies.begin()->second.matched_data);
+    ASSERT_EQ(replies.begin()->second.rsi.size(), 2);
+    ASSERT_EQ(client.primary(), ReplicaId_t{0});
+    client.stop();
+  } else {
+    Client client(move(comm), test_config_);
+    ReadConfig read_config{RequestConfig{false, 1}, All{}};
+    read_config.request.timeout = 500ms;
+    ASSERT_THROW(client.send(read_config, Msg({1, 2, 3, 4, 5})), TimeoutException);
+    client.stop();
+  }
 }
 
 // 1st element - sign transaction
 // 2nd element - is private key encrypted
 // 3rd element - negative scenario string
+// 4th element - send batch
 // The comma at the end is due to a bug in gtest 3.09 - https://github.com/google/googletest/issues/2271 - see last
 // comment
-typedef tuple<bool, bool, string> ClientApiTestParametrizedFixtureInput;
+typedef tuple<bool, bool, string, bool> ClientApiTestParametrizedFixtureInput;
 INSTANTIATE_TEST_CASE_P(ClientApiTest,
                         ClientApiTestParametrizedFixture,
-                        ::testing::Values(ClientApiTestParametrizedFixtureInput(false, false, "happy_flow"),
-                                          ClientApiTestParametrizedFixtureInput(true, false, "happy_flow"),
-                                          ClientApiTestParametrizedFixtureInput(true, true, "happy_flow"),
-                                          ClientApiTestParametrizedFixtureInput(true, false, "corrupt_in_dest")), );
+                        ::testing::Values(  // ClientApiTestParametrizedFixtureInput(false, false, "happy_flow", false),
+                                            // ClientApiTestParametrizedFixtureInput(true, false, "happy_flow", false),
+                            ClientApiTestParametrizedFixtureInput(true, false, "happy_flow", true),
+                            // ClientApiTestParametrizedFixtureInput(true, true, "happy_flow", false),
+                            ClientApiTestParametrizedFixtureInput(true, false, "corrupt_in_dest", false)), );
 
 Msg replyFromRequest(const MsgFromClient& request) {
   const auto* req_header = reinterpret_cast<const ClientRequestMsgHeader*>(request.data.data());
@@ -407,6 +462,7 @@ TEST_F(ClientApiTestFixture, batch_of_writes) {
   std::deque<WriteRequest> request_queue;
   request_queue.push_back(request1);
   request_queue.push_back(request2);
+  test_config_.max_in_batch = request_queue.size();
   auto replies = client.sendBatch(request_queue, request1.config.request.correlation_id);
   Msg expected{'w', 'o', 'r', 'l', 'd'};
   ASSERT_EQ(replies.size(), request_queue.size());
@@ -455,6 +511,7 @@ TEST_F(ClientApiTestFixture, client_handle_several_batches) {
     std::deque<WriteRequest> request_queue;
     request_queue.push_back(request1);
     request_queue.push_back(request2);
+    test_config_.max_in_batch = request_queue.size();
     auto replies = client.sendBatch(request_queue, request1.config.request.correlation_id);
     Msg expected{'w', 'o', 'r', 'l', 'd'};
     ASSERT_EQ(replies.size(), request_queue.size());
@@ -480,6 +537,7 @@ TEST_F(ClientApiTestFixture, batch_of_writes_no_reply) {
   std::deque<WriteRequest> request_queue;
   request_queue.push_back(request1);
   request_queue.push_back(request2);
+  test_config_.max_in_batch = request_queue.size();
   try {
     auto replies = client.sendBatch(request_queue, request1.config.request.correlation_id);
   } catch (BatchTimeoutException& e) {

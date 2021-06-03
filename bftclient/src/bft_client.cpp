@@ -35,7 +35,8 @@ Client::Client(std::unique_ptr<bft::communication::ICommunication> comm, const C
                                config_.retry_timeout_config.max_increasing_factor,
                                config_.retry_timeout_config.max_decreasing_factor),
       metrics_(config.id),
-      histograms_(std::unique_ptr<Recorders>(new Recorders(config.id))) {
+      histograms_(std::unique_ptr<Recorders>(new Recorders(config.id))),
+      signers_pool_(config.max_in_batch) {
   // secrets_manager_config can be set only if transaction_signing_private_key_file_path is set
   if (config.secrets_manager_config) ConcordAssert(config.transaction_signing_private_key_file_path != std::nullopt);
   if (config.transaction_signing_private_key_file_path) {
@@ -58,7 +59,11 @@ Client::Client(std::unique_ptr<bft::communication::ICommunication> comm, const C
   communication_->Start();
 }
 
-Msg Client::createClientMsg(const RequestConfig& config, Msg&& request, bool read_only, uint16_t client_id) {
+Msg Client::createClientMsg(const RequestConfig& config,
+                            Msg&& request,
+                            bool read_only,
+                            uint16_t client_id,
+                            std::vector<std::future<void>>& futures) {
   uint8_t flags = read_only ? READ_ONLY_REQ : EMPTY_FLAGS_REQ;
   size_t expected_sig_len = 0;
   bool write_req_with_pre_exec = !read_only && config.pre_execute;
@@ -104,31 +109,22 @@ Msg Client::createClientMsg(const RequestConfig& config, Msg&& request, bool rea
   std::memcpy(position, config.correlation_id.data(), config.correlation_id.size());
 
   if (transaction_signer_) {
-    // Sign the request data, add the signature at the end of the request
-    size_t actualSigSize = 0;
     position += config.correlation_id.size();
-    {
-      TimeRecorder scoped_timer(*histograms_->sign_duration);
-      transaction_signer_->sign(reinterpret_cast<const char*>(request.data()),
-                                request.size(),
-                                reinterpret_cast<char*>(position),
-                                expected_sig_len,
-                                actualSigSize);
-      ConcordAssert(expected_sig_len == actualSigSize);
-      header->reqSignatureLength = actualSigSize;
-      histograms_->transaction_size->record(request.size());
-    }
-
-    metrics_.transactionSigning.Get().Inc();
-    if ((metrics_.transactionSigning.Get().Get() % count_between_snapshots) == 0) {
-      auto& registrar = concord::diagnostics::RegistrarSingleton::getInstance();
-      auto& name = histograms_->getComponenetName();
-      registrar.perf.snapshot(name);
-      LOG_DEBUG(logger_,
-                "Signing stats snapshot #" << snapshot_index_ << " for " << name << std::endl
-                                           << registrar.perf.toString(registrar.perf.get(name)));
-      snapshot_index_++;
-    }
+    futures.emplace_back(signers_pool_.async([=, request = std::move(request)]() {
+      {
+        // Sign the request data, add the signature at the end of the request
+        size_t actualSigSize = 0;
+        TimeRecorder<true> scoped_timer(*histograms_->sign_duration);
+        transaction_signer_->sign(reinterpret_cast<const char*>(request.data()),
+                                  request.size(),
+                                  reinterpret_cast<char*>(position),
+                                  expected_sig_len,
+                                  actualSigSize);
+        ConcordAssert(expected_sig_len == actualSigSize);
+        header->reqSignatureLength = actualSigSize;
+      }
+    }));
+    histograms_->transaction_size->record(request.size());
   } else {
     header->reqSignatureLength = 0;
   }
@@ -165,23 +161,48 @@ Msg Client::createClientBatchMsg(const std::deque<Msg>& client_requests,
   return msg;
 }
 
+void Client::onSigningCompleted() {
+  metrics_.transactionSigning.Get().Inc();
+  if ((metrics_.transactionSigning.Get().Get() % count_between_snapshots) == 0) {
+    auto& registrar = concord::diagnostics::RegistrarSingleton::getInstance();
+    auto& name = histograms_->getComponenetName();
+    registrar.perf.snapshot(name);
+    LOG_DEBUG(logger_,
+              "Signing stats snapshot #" << snapshot_index_ << " for " << name << std::endl
+                                         << registrar.perf.toString(registrar.perf.get(name)));
+    snapshot_index_++;
+  }
+}
+
 Msg Client::initBatch(std::deque<WriteRequest>& write_requests,
                       const std::string& cid,
                       std::chrono::milliseconds& max_time_to_wait) {
   Msg client_msg;
   MatchConfig match_config;
   uint32_t max_reply_size = 0;
+  std::vector<std::future<void>> signature_futures;
+
+  signature_futures.reserve(write_requests.size());
   for (auto& req : write_requests) {
     match_config = writeConfigToMatchConfig(req.config);
     reply_certificates_.insert(std::make_pair(req.config.request.sequence_number, Matcher(match_config)));
-    pending_requests_.push_back(createClientMsg(req.config.request, std::move(req.request), false, config_.id.val));
+    pending_requests_.push_back(
+        createClientMsg(req.config.request, std::move(req.request), false, config_.id.val, signature_futures));
+
     if (req.config.request.timeout > max_time_to_wait) max_time_to_wait = req.config.request.timeout;
     if (req.config.request.max_reply_size > max_reply_size) max_reply_size = req.config.request.max_reply_size;
+  }
+  if (transaction_signer_) {
+    for (auto& f : signature_futures) {
+      f.get();
+      onSigningCompleted();
+    }
   }
   uint32_t batch_buf_size = 0;
   for (auto const& msg : pending_requests_) batch_buf_size += msg.size();
   receiver_.activate(max_reply_size);
-  return createClientBatchMsg(pending_requests_, batch_buf_size, cid, config_.id.val);
+  auto batch_msg = createClientBatchMsg(pending_requests_, batch_buf_size, cid, config_.id.val);
+  return batch_msg;
 }
 
 Reply Client::send(const WriteConfig& config, Msg&& request) {
@@ -206,7 +227,12 @@ Reply Client::send(const MatchConfig& match_config,
   metrics_.updateAggregator();
   reply_certificates_.insert(std::make_pair(request_config.sequence_number, Matcher(match_config)));
   receiver_.activate(request_config.max_reply_size);
-  auto orig_msg = createClientMsg(request_config, std::move(request), read_only, config_.id.val);
+  std::vector<std::future<void>> futures;
+  auto orig_msg = createClientMsg(request_config, std::move(request), read_only, config_.id.val, futures);
+  if (transaction_signer_) {
+    futures[0].get();
+    onSigningCompleted();
+  }
   auto start = std::chrono::steady_clock::now();
   auto end = start + request_config.timeout;
   while (std::chrono::steady_clock::now() < end) {
