@@ -235,6 +235,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       blocks_collected_(get_missing_blocks_summary_window_size),
       bytes_collected_(get_missing_blocks_summary_window_size),
       first_collected_block_num_({}),
+      src_block_fetchers_(number_of_fetchers),
       fetch_block_msg_latency_rec_(histograms_.fetch_blocks_msg_latency),
       src_send_batch_duration_rec_(histograms_.src_send_batch_duration) {
   ConcordAssertNE(stateApi, nullptr);
@@ -662,7 +663,6 @@ void BCStateTran::onTimerImp() {
   auto currTimeForDumping =
       std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch());
   if (currTimeForDumping - last_metrics_dump_time_ >= metrics_dump_interval_in_sec_) {
-    metrics_.fetching_state_.Get().Set(stateName(fs));
     last_metrics_dump_time_ = currTimeForDumping;
     LOG_INFO(getLogger(), "--BCStateTransfer metrics dump--" + metrics_component_.ToJson());
   }
@@ -1264,6 +1264,7 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
     }
   }
   metrics_.last_block_.Get().Set(newCheckpoint.lastBlock);
+  fetchingState = stateName(getFetchingState());
   metrics_.fetching_state_.Get().Set(fetchingState);
 
   processData();
@@ -1279,11 +1280,12 @@ void BCStateTran::getBlock(uint64_t blockId, char *outBlock, uint32_t *outBlockS
   }
   ConcordAssert(tmp);
   ConcordAssertGT(*outBlockSize, 0);
-  histograms_.src_get_block_size_bytes->record(*outBlockSize);
+  histograms_.src_get_block_size_bytes->recordAtomic(*outBlockSize);
 }
 
 bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t replicaId) {
   SCOPED_MDC_SEQ_NUM(getSequenceNumber(replicaId, m->msgSeqNum));
+  // std::array<char *, number_of_fetchers> fetchers_buffer;
   LOG_DEBUG(getLogger(), "");
   metrics_.received_fetch_blocks_msg_.Get().Inc();
 
@@ -1328,20 +1330,20 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   src_send_batch_duration_rec_.start();
 
   // compute information about next block and chunk
-  uint64_t nextBlock = m->lastRequiredBlock;
+  uint64_t nextBlockId = m->lastRequiredBlock;
   uint32_t sizeOfNextBlock = 0;
-  getBlock(nextBlock, buffer_, &sizeOfNextBlock);
+  uint32_t sizeOfLastChunk = config_.maxChunkSize;
+  uint32_t numOfChunksInNextBlock = sizeOfNextBlock / config_.maxChunkSize;
+  uint16_t nextChunk = m->lastKnownChunkInLastRequiredBlock + 1;
+
+  getBlock(nextBlockId, buffer_, &sizeOfNextBlock);
   batch_size_bytes += sizeOfNextBlock;
   ++batch_size_blocks;
 
-  uint32_t sizeOfLastChunk = config_.maxChunkSize;
-  uint32_t numOfChunksInNextBlock = sizeOfNextBlock / config_.maxChunkSize;
   if (sizeOfNextBlock % config_.maxChunkSize != 0) {
     sizeOfLastChunk = sizeOfNextBlock % config_.maxChunkSize;
     numOfChunksInNextBlock++;
   }
-
-  uint16_t nextChunk = m->lastKnownChunkInLastRequiredBlock + 1;
 
   // if msg is invalid (lastKnownChunkInLastRequiredBlock+1 does not exist)
   if (nextChunk > numOfChunksInNextBlock) {
@@ -1353,7 +1355,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   // send chunks
   uint16_t numOfSentChunks = 0;
   while (true) {
-    SCOPED_MDC_SEQ_NUM(getSequenceNumber(replicaId, m->msgSeqNum, nextChunk, nextBlock));
+    SCOPED_MDC_SEQ_NUM(getSequenceNumber(replicaId, m->msgSeqNum, nextChunk, nextBlockId));
     uint32_t chunkSize = (nextChunk < numOfChunksInNextBlock) ? config_.maxChunkSize : sizeOfLastChunk;
 
     ConcordAssertGT(chunkSize, 0);
@@ -1362,7 +1364,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
     ItemDataMsg *outMsg = ItemDataMsg::alloc(chunkSize);  // TODO(GG): improve
 
     outMsg->requestMsgSeqNum = m->msgSeqNum;
-    outMsg->blockNumber = nextBlock;
+    outMsg->blockNumber = nextBlockId;
     outMsg->totalNumberOfChunksInBlock = numOfChunksInNextBlock;
     outMsg->chunkNumber = nextChunk;
     outMsg->dataSize = chunkSize;
@@ -1394,13 +1396,13 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
       nextChunk++;
     }
     // we sent all relevant blocks
-    else if (nextBlock - 1 < m->firstRequiredBlock) {
+    else if (nextBlockId - 1 < m->firstRequiredBlock) {
       LOG_DEBUG(getLogger(), "Sent all relevant blocks: " << KVLOG(m->firstRequiredBlock));
       break;
     } else {
-      nextBlock--;
-      LOG_DEBUG(getLogger(), "Start sending next block: " << KVLOG(nextBlock));
-      getBlock(nextBlock, buffer_, &sizeOfNextBlock);
+      nextBlockId--;
+      LOG_DEBUG(getLogger(), "Start sending next block: " << KVLOG(nextBlockId));
+      getBlock(nextBlockId, buffer_, &sizeOfNextBlock);
       batch_size_bytes += sizeOfNextBlock;
       ++batch_size_blocks;
 
