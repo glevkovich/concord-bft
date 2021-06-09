@@ -48,6 +48,9 @@ using std::chrono::time_point;
 using std::chrono::system_clock;
 using namespace std::placeholders;
 using namespace concord::diagnostics;
+
+extern std::string toString(char *buff, size_t bufSize);
+
 namespace bftEngine {
 namespace bcst {
 
@@ -235,7 +238,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       blocks_collected_(get_missing_blocks_summary_window_size),
       bytes_collected_(get_missing_blocks_summary_window_size),
       first_collected_block_num_({}),
-      src_block_fetchers_(number_of_fetchers),
+      src_block_fetchers_pool_(number_of_fetchers),
       fetch_block_msg_latency_rec_(histograms_.fetch_blocks_msg_latency),
       src_send_batch_duration_rec_(histograms_.src_send_batch_duration) {
   ConcordAssertNE(stateApi, nullptr);
@@ -246,6 +249,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
   // Register metrics component with the default aggregator.
   metrics_component_.Register();
 
+  for (auto &context : src_fetchers_context_) context.buffer = new char[maxItemSize_];
   buffer_ = new char[maxItemSize_]{};
   LOG_INFO(getLogger(), "Creating BCStateTran object: " << config_);
 
@@ -268,6 +272,7 @@ BCStateTran::~BCStateTran() {
   ConcordAssert(pendingItemDataMsgs.empty());
 
   delete[] buffer_;
+  for (auto &context : src_fetchers_context_) delete[] context.buffer;
 }
 
 // Load metrics that are saved on persistent storage
@@ -1275,7 +1280,7 @@ void BCStateTran::getBlock(uint64_t blockId, char *outBlock, uint32_t *outBlockS
   bool tmp;
   *outBlockSize = 0;
   {
-    TimeRecorder scoped_timer(*histograms_.src_get_block_duration);
+    TimeRecorder<true> scoped_timer(*histograms_.src_get_block_duration);
     tmp = as_->getBlock(blockId, outBlock, outBlockSize);
   }
   ConcordAssert(tmp);
@@ -1285,7 +1290,6 @@ void BCStateTran::getBlock(uint64_t blockId, char *outBlock, uint32_t *outBlockS
 
 bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t replicaId) {
   SCOPED_MDC_SEQ_NUM(getSequenceNumber(replicaId, m->msgSeqNum));
-  // std::array<char *, number_of_fetchers> fetchers_buffer;
   LOG_DEBUG(getLogger(), "");
   metrics_.received_fetch_blocks_msg_.Get().Inc();
 
@@ -1335,13 +1339,42 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   uint16_t nextChunk = m->lastKnownChunkInLastRequiredBlock + 1;
   uint16_t numOfSentChunks = 0;
 
+  auto getBlock_func = std::bind(&BCStateTran::getBlock, this, _1, _2, _3);
+  // LOG_DEBUG(
+  //     getLogger(),
+  //     "xxx before calling to pool..." << KVLOG(m->firstRequiredBlock, nextBlockId,
+  //     config_.maxNumberOfChunksInBatch));
+  for (uint64_t i{nextBlockId}, j{0}; (i >= m->firstRequiredBlock) && (j < config_.maxNumberOfChunksInBatch);
+       --i, ++j) {
+    // LOG_DEBUG(
+    //     getLogger(),
+    //     "xxx 1 " << KVLOG(j, (uintptr_t)src_fetchers_context_[j].buffer, (uintptr_t)&src_fetchers_context_[j].size));
+    src_fetchers_context_[j].blockId = i;
+    src_fetchers_context_[j].future = src_block_fetchers_pool_.async(getBlock_func,
+                                                                     std::ref(src_fetchers_context_[j].blockId),
+                                                                     std::ref(src_fetchers_context_[j].buffer),
+                                                                     &src_fetchers_context_[j].size);
+    // LOG_DEBUG(getLogger(), "xxx done iteration " << KVLOG(i, j));
+    // src_fetchers_context_[j].future.get();
+  }
+  // LOG_DEBUG(getLogger(), "xxx done calling to pool...");
+
   // fetch blocks and send all chunks for the batch
   LOG_DEBUG(getLogger(),
             "Start sending batch: " << KVLOG(
                 m->msgSeqNum, m->firstRequiredBlock, m->lastRequiredBlock, m->lastKnownChunkInLastRequiredBlock));
+  size_t j = 0;
   do {
+    // LOG_DEBUG(getLogger(), "xxx wait for j=" << j);
+    src_fetchers_context_[j].future.get();
+    sizeOfNextBlock = src_fetchers_context_[j].size;
+    buffer_ = src_fetchers_context_[j].buffer;
+    // LOG_DEBUG(getLogger(), "xxx done wait for " << KVLOG(j, (uintptr_t)buffer_, sizeOfNextBlock));
+    // LOG_DEBUG(getLogger(), "xxx buffer_:" << ::toString(buffer_, sizeOfNextBlock));
+
     LOG_DEBUG(getLogger(), "Start sending next block: " << KVLOG(nextBlockId));
-    getBlock(nextBlockId, buffer_, &sizeOfNextBlock);
+
+    // getBlock(nextBlockId, buffer_, &sizeOfNextBlock);
     batch_size_bytes += sizeOfNextBlock;
     ++batch_size_blocks;
 
@@ -1376,20 +1409,21 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
     memcpy(outMsg->data, pRawChunk, chunkSize);
 
     LOG_DEBUG(getLogger(),
-              "Sending ItemDataMsg: " << KVLOG(replicaId,
+              "Sending ItemDataMsg: " << std::boolalpha
+                                      << KVLOG(replicaId,
                                                outMsg->requestMsgSeqNum,
                                                outMsg->blockNumber,
                                                outMsg->totalNumberOfChunksInBlock,
                                                outMsg->chunkNumber,
                                                outMsg->dataSize,
-                                               outMsg->lastInBatch));
+                                               (int)outMsg->lastInBatch)
+                                      << std::noboolalpha);
 
     metrics_.sent_item_data_msg_.Get().Inc();
     replicaForStateTransfer_->sendStateTransferMessage(reinterpret_cast<char *>(outMsg), outMsg->size(), replicaId);
 
     ItemDataMsg::free(outMsg);
     numOfSentChunks++;
-    nextBlockId--;
 
     // if we've already sent enough chunks
     if (numOfSentChunks >= config_.maxNumberOfChunksInBatch) {
@@ -1398,12 +1432,14 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
     } else if (static_cast<uint16_t>(nextChunk + 1) <= numOfChunksInNextBlock) {
       // we still have chunks in block
       nextChunk++;
-    } else if (nextBlockId < m->firstRequiredBlock) {
+    } else if ((nextBlockId - 1) < m->firstRequiredBlock) {
       LOG_DEBUG(getLogger(), "Sent all relevant blocks: " << KVLOG(m->firstRequiredBlock));
       break;
     } else {
       // no more chunks in the block
+      --nextBlockId;
       nextChunk = 1;
+      ++j;
     }
   } while (true);
 
@@ -1411,6 +1447,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   histograms_.src_send_batch_size_blocks->record(batch_size_blocks);
   src_send_batch_duration_rec_.end();
 
+  LOG_WARN(getLogger(), "xxx done sending batch!");
   return false;
 }
 

@@ -35,6 +35,25 @@ using namespace concord::diagnostics;
 
 using concord::storage::DBMetadataStorage;
 
+// // tmp
+// std::string toString(char *buff, size_t bufSize) {
+//   char* c = new char[bufSize * 2];
+//   char t[3];
+//   static_assert(sizeof(t) == 3, "");
+//   for (size_t i = 0; i < bufSize; i++) {
+//     // TODO(DD): Is it by design?
+//     // NOLINTNEXTLINE(bugprone-signed-char-misuse)
+//     unsigned int b = (unsigned char)buff[i];
+//     snprintf(t, sizeof(t), "%02X", b);
+//     c[i * 2] = t[0];
+//     c[i * 2 + 1] = t[1];
+//   }
+
+//   std::string ret(c, bufSize * 2);
+
+//   return ret;
+// }
+
 namespace concord::kvbc {
 
 /**
@@ -388,6 +407,8 @@ bool Replica::getBlock(uint64_t blockId, char *outBlock, uint32_t *outBlockSize)
   *outBlockSize = ser.size();
   LOG_DEBUG(logger, KVLOG(blockId, *outBlockSize));
   std::memcpy(outBlock, ser.data(), *outBlockSize);
+  // LOG_DEBUG(logger, "xxx " << KVLOG(blockId, (uintptr_t)outBlock, (uintptr_t)outBlockSize));
+  // LOG_DEBUG(logger, "xxx rawBlock:" << toString(outBlock, *outBlockSize));
   return true;
 }
 

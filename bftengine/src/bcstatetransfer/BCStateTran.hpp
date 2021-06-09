@@ -458,9 +458,15 @@ class BCStateTran : public IStateTransfer {
   ///////////////////////////////////////////////////////////////////////////
   // worker threads
   ///////////////////////////////////////////////////////////////////////////
-  constexpr static uint8_t number_of_fetchers = 16;  // todo - get from config file
-  concord::util::ThreadPool src_block_fetchers_;
-  std::vector<std::unique_ptr<ItemDataMsg>> src_workers_items_;
+  struct block_fetcher_context {
+    uint64_t blockId;
+    char* buffer;
+    uint32_t size;
+    std::future<void> future;
+  };
+  constexpr static uint8_t number_of_fetchers = 64;  // todo - get from config file
+  concord::util::ThreadPool src_block_fetchers_pool_;
+  std::array<block_fetcher_context, number_of_fetchers> src_fetchers_context_;
 
   ///////////////////////////////////////////////////////////////////////////
   // Latency Historgrams
