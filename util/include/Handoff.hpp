@@ -18,6 +18,7 @@
 #include <condition_variable>
 #include <functional>
 #include <exception>
+#include <chrono>
 #include "Logger.hpp"
 
 namespace concord::util {
@@ -60,6 +61,7 @@ class Handoff {
     {
       guard g(queue_lock_);
       task_queue_.push(std::move(f));
+      LOG_INFO(getLogger(), "pushed! queue size: " << task_queue_.size());
     }
     queue_cond_.notify_one();
   }
@@ -74,8 +76,12 @@ class Handoff {
   func_type pop() {
     while (true) {
       std::unique_lock<std::mutex> ul(queue_lock_);
+      auto start = std::chrono::steady_clock::now();
       queue_cond_.wait(ul, [this] { return !(task_queue_.empty() && !stopped_); });
-      LOG_TRACE(getLogger(), "notified stopped_: " << stopped_ << " queue size: " << task_queue_.size());
+      auto duration = std::chrono::steady_clock::now() - start;
+      LOG_INFO(getLogger(),
+               "notified stopped_: " << stopped_ << " queue size: " << task_queue_.size() << " time waited: "
+                                     << std::chrono::duration_cast<std::chrono::microseconds>(duration).count());
 
       if (!stopped_ || (stopped_ && !task_queue_.empty())) {
         func_type f = task_queue_.front();

@@ -142,6 +142,7 @@ class BCStateTran : public IStateTransfer {
 
   uint64_t maxNumOfStoredCheckpoints_;
   uint64_t numberOfReservedPages_;
+  uint32_t cycleCounter_;
 
   std::atomic<bool> running_ = false;
   std::unique_ptr<concord::util::Handoff> handoff_;
@@ -484,6 +485,7 @@ class BCStateTran : public IStateTransfer {
                                        {fetch_blocks_msg_latency,
                                         on_timer,
                                         handle_state_transfer_msg,
+                                        handoff_queue_idle_duration,  // remove later? (duplicated with Mahaveer?)
                                         handle_AskForCheckpointSummaries_msg,
                                         handle_CheckpointsSummary_msg,
                                         handle_FetchBlocks_msg,
@@ -502,6 +504,11 @@ class BCStateTran : public IStateTransfer {
     DEFINE_SHARED_RECORDER(on_timer, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
         handle_state_transfer_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handoff_queue_idle_duration,
+                           1,
+                           MAX_VALUE_MICROSECONDS,
+                           3,
+                           concord::diagnostics::Unit::MICROSECONDS);  // remove later? (duplicated with Mahaveer?)
     // message handling historgrams
     DEFINE_SHARED_RECORDER(
         handle_AskForCheckpointSummaries_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
@@ -526,10 +533,13 @@ class BCStateTran : public IStateTransfer {
   Recorders histograms_;
 
   // Record latency for FetchBlockMsg <-> ItemDataMsg. These messages are sent multiple times between dest and src
-  concord::diagnostics::AsyncTimeRecorderMap<SeqNum, true> fetch_block_msg_latency_rec_;  // todo - remove or fix
+  concord::diagnostics::AsyncTimeRecorderMap<SeqNum, true>
+      fetch_block_msg_latency_rec_;  // TODO - remove or fix, // TODO - need atomic? for now yes (safety), analyaze
+                                     // later
 
-  // sync time recorders - wrap the above shared recorders
-  AsyncTimeRecorder<false> src_send_batch_duration_rec_;
+  // Async time recorders - wrap the above shared recorders
+  AsyncTimeRecorder<true> src_send_batch_duration_rec_;      // TODO - need atomic? for now yes (safety), analyaze later
+  AsyncTimeRecorder<true> handoff_queue_idle_duration_rec_;  // TODO - need atomic? for now yes (safety), analyaze later
 
   // An array of size MsgTypeLast which holds the total processing time for each message size during ST cycle.
   // index 0 holds the total for all messages

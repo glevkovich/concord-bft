@@ -156,6 +156,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
           calcMaxNumOfChunksInBlock(maxItemSize_, config_.maxBlockSize, config_.maxChunkSize, true)},
       maxNumOfStoredCheckpoints_{0},
       numberOfReservedPages_{0},
+      cycleCounter_(0),
       randomGen_{randomDevice_()},
       sourceSelector_{
           allOtherReplicas(), config_.fetchRetransmissionTimeoutMs, config_.sourceReplicaReplacementTimeoutMs},
@@ -240,7 +241,8 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       first_collected_block_num_({}),
       src_block_fetchers_pool_(number_of_fetchers),
       fetch_block_msg_latency_rec_(histograms_.fetch_blocks_msg_latency),
-      src_send_batch_duration_rec_(histograms_.src_send_batch_duration) {
+      src_send_batch_duration_rec_(histograms_.src_send_batch_duration),
+      handoff_queue_idle_duration_rec_(histograms_.handoff_queue_idle_duration) {
   ConcordAssertNE(stateApi, nullptr);
   ConcordAssertGE(replicas_.size(), 3U * config_.fVal + 1U);
   ConcordAssert(replicas_.count(config_.myReplicaId) == 1 || config.isReadOnly);
@@ -634,11 +636,12 @@ void BCStateTran::startCollectingStats() {
   metrics_.prev_win_bytes_throughtput_.Get().Set(0ull);
 
   fetch_block_msg_latency_rec_.clear();
+  handoff_queue_idle_duration_rec_.clear();
   memset(&total_processing_time_microsec_, 0, sizeof(total_processing_time_microsec_));
 }
 
 void BCStateTran::startCollectingState() {
-  LOG_INFO(getLogger(), "");
+  LOG_INFO(getLogger(), "State Transfer cycle #" << ++cycleCounter_ << " started");
 
   ConcordAssert(running_);
   ConcordAssert(!isFetching());
@@ -657,6 +660,7 @@ void BCStateTran::startCollectingState() {
 // this function can be executed in context of another thread.
 void BCStateTran::onTimerImp() {
   if (!running_) return;
+  handoff_queue_idle_duration_rec_.end();
   TimeRecorder scoped_timer(*histograms_.on_timer);
 
   metrics_.on_timer_.Get().Inc();
@@ -683,6 +687,7 @@ void BCStateTran::onTimerImp() {
   } else if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages) {
     processData();
   }
+  handoff_queue_idle_duration_rec_.start();
 }
 
 std::string BCStateTran::getStatus() {
@@ -740,6 +745,7 @@ void BCStateTran::addOnTransferringCompleteCallback(std::function<void(uint64_t)
 // this function can be executed in context of another thread.
 void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint16_t senderId) {
   if (!running_) return;
+  handoff_queue_idle_duration_rec_.end();
   bool invalidSender = (senderId >= (config_.numReplicas + config_.numRoReplicas));
   bool sentFromSelf = senderId == config_.myReplicaId;
   bool msgSizeTooSmall = msgLen < sizeof(BCStateTranBaseMsg);
@@ -747,6 +753,7 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
     metrics_.received_illegal_msg_.Get().Inc();
     LOG_WARN(getLogger(), "Illegal message: " << KVLOG(msgLen, senderId, msgSizeTooSmall, sentFromSelf, invalidSender));
     replicaForStateTransfer_->freeStateTransferMsg(msg);
+    handoff_queue_idle_duration_rec_.start();
     return;
   }
   bool msg_processed = false;
@@ -814,6 +821,7 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
     histograms_.handle_state_transfer_msg->record(interval);
   }
   if (!noDelete) replicaForStateTransfer_->freeStateTransferMsg(msg);
+  handoff_queue_idle_duration_rec_.start();
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -2383,6 +2391,7 @@ void BCStateTran::processData() {
       LOG_INFO(getLogger(), registrar.perf.toString(registrar.perf.get("state_transfer")));
 
       // Completion
+      LOG_INFO(getLogger(), "State Transfer cycle #" << cycleCounter_ << " ended");
       LOG_INFO(getLogger(),
                "Invoking onTransferringComplete callbacks for checkpoint number: " << KVLOG(cp.checkpointNum));
       metrics_.on_transferring_complete_.Get().Inc();
