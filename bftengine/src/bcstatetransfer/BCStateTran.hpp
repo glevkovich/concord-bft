@@ -293,7 +293,6 @@ class BCStateTran : public IStateTransfer {
                         uint32_t& outBlockSize,
                         bool isVBLock,
                         bool& outLastInBatch);
-  void getBlock(uint64_t blockId, char* outBlock, uint32_t* outBlockSize);
 
   bool checkBlock(uint64_t blockNum, const STDigest& expectedBlockDigest, char* block, uint32_t blockSize) const;
 
@@ -455,11 +454,11 @@ class BCStateTran : public IStateTransfer {
   void reportCollectingStatus(const uint64_t firstRequiredBlock, const uint32_t actualBlockSize);
   void startCollectingStats();
 
- private:
   ///////////////////////////////////////////////////////////////////////////
   // worker threads
   ///////////////////////////////////////////////////////////////////////////
   struct block_fetcher_context {
+    uint64_t fetch_block_duration_microsec;
     uint64_t blockId;
     char* buffer;
     uint32_t size;
@@ -467,8 +466,11 @@ class BCStateTran : public IStateTransfer {
   };
   constexpr static uint8_t number_of_fetchers = 64;  // todo - get from config file
   concord::util::ThreadPool src_block_fetchers_pool_;
-  std::array<block_fetcher_context, number_of_fetchers> src_fetchers_context_;
+  std::vector<block_fetcher_context> src_fetchers_context_;
 
+  void sourceGetBlock(block_fetcher_context* ctx);
+
+ private:
   ///////////////////////////////////////////////////////////////////////////
   // Latency Historgrams
   ///////////////////////////////////////////////////////////////////////////
