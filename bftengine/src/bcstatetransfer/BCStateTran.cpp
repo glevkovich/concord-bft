@@ -1424,8 +1424,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
                                                outMsg->totalNumberOfChunksInBlock,
                                                outMsg->chunkNumber,
                                                outMsg->dataSize,
-                                               (int)outMsg->lastInBatch)
-                                      << std::noboolalpha);
+                                               (bool)outMsg->lastInBatch));
 
     metrics_.sent_item_data_msg_.Get().Inc();
     replicaForStateTransfer_->sendStateTransferMessage(reinterpret_cast<char *>(outMsg), outMsg->size(), replicaId);
@@ -1655,7 +1654,8 @@ bool BCStateTran::onMessage(const ItemDataMsg *m, uint32_t msgLen, uint16_t repl
       (fs == FetchingState::GettingMissingBlocks) ? maxNumOfChunksInAppBlock_ : maxNumOfChunksInVBlock_;
 
   LOG_DEBUG(getLogger(),
-            KVLOG(m->blockNumber, m->totalNumberOfChunksInBlock, m->chunkNumber, m->dataSize, m->lastInBatch));
+            std::boolalpha << KVLOG(
+                m->blockNumber, m->totalNumberOfChunksInBlock, m->chunkNumber, m->dataSize, (bool)m->lastInBatch));
 
   // if msg is invalid
   if (msgLen < m->size() || m->requestMsgSeqNum == 0 || m->blockNumber == 0 || m->totalNumberOfChunksInBlock == 0 ||
@@ -2303,9 +2303,7 @@ void BCStateTran::processData() {
 
       const uint64_t firstRequiredBlock = g.txn()->getFirstRequiredBlock();
       bool lastBlock = (firstRequiredBlock >= nextRequiredBlock_);
-      LOG_DEBUG(getLogger(),
-                "Add block: " << std::boolalpha << "lastBlock=" << lastBlock
-                              << KVLOG(nextRequiredBlock_, actualBlockSize) << std::noboolalpha);
+      LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
 
       ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
 
