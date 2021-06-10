@@ -76,12 +76,16 @@ class Handoff {
   func_type pop() {
     while (true) {
       std::unique_lock<std::mutex> ul(queue_lock_);
-      auto start = std::chrono::steady_clock::now();
-      queue_cond_.wait(ul, [this] { return !(task_queue_.empty() && !stopped_); });
-      auto duration = std::chrono::steady_clock::now() - start;
-      LOG_INFO(getLogger(),
-               "notified stopped_: " << stopped_ << " queue size: " << task_queue_.size() << " time waited: "
-                                     << std::chrono::duration_cast<std::chrono::microseconds>(duration).count());
+      if (task_queue_.empty()) {
+        auto start = std::chrono::steady_clock::now();
+        queue_cond_.wait(ul, [this] { return !(task_queue_.empty() && !stopped_); });
+        auto duration = std::chrono::steady_clock::now() - start;
+        LOG_INFO(getLogger(),
+                 "notified stopped_: " << stopped_ << " queue size: " << task_queue_.size() << " time waited: "
+                                       << std::chrono::duration_cast<std::chrono::microseconds>(duration).count());
+      } else {
+        LOG_INFO(getLogger(), "queue is not empty. size: " << task_queue_.size());  // TOdO reduce to TRACE
+      }
 
       if (!stopped_ || (stopped_ && !task_queue_.empty())) {
         func_type f = task_queue_.front();
