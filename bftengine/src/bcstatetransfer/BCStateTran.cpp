@@ -637,7 +637,7 @@ void BCStateTran::startCollectingStats() {
 
   fetch_block_msg_latency_rec_.clear();
   handoff_queue_idle_duration_rec_.clear();
-  memset(&total_processing_time_microsec_, 0, sizeof(total_processing_time_microsec_));
+  // memset(&total_processing_time_microsec_, 0, sizeof(total_processing_time_microsec_));
 }
 
 void BCStateTran::startCollectingState() {
@@ -817,7 +817,7 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
   if (msg_processed) {
     uint64_t interval =
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
-    total_processing_time_microsec_[msgHeader->type] += interval;
+    // total_processing_time_microsec_[msgHeader->type] += interval;
     histograms_.handle_state_transfer_msg->record(interval);
   }
   if (!noDelete) replicaForStateTransfer_->freeStateTransferMsg(msg);

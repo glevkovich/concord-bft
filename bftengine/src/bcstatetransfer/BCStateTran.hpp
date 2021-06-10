@@ -543,7 +543,7 @@ class BCStateTran : public IStateTransfer {
 
   // An array of size MsgTypeLast which holds the total processing time for each message size during ST cycle.
   // index 0 holds the total for all messages
-  std::array<uint64_t, MsgType::MsgTypeLast> total_processing_time_microsec_;
+  // std::array<uint64_t, MsgType::MsgTypeLast> total_processing_time_microsec_;
 };  // namespace bftEngine::bcst::impl
 
 }  // namespace bftEngine::bcst::impl
