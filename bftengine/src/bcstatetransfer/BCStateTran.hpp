@@ -455,7 +455,7 @@ class BCStateTran : public IStateTransfer {
   void startCollectingStats();
 
   ///////////////////////////////////////////////////////////////////////////
-  // worker threads
+  // worker threads and source
   ///////////////////////////////////////////////////////////////////////////
   struct block_fetcher_context {
     uint64_t fetch_block_duration_microsec;
@@ -469,6 +469,9 @@ class BCStateTran : public IStateTransfer {
   std::vector<block_fetcher_context> src_fetchers_context_;
 
   void sourceGetBlock(block_fetcher_context* ctx);
+  uint16_t asyncFetchBlocksConcurrent(uint64_t nextBlockId,
+                                      uint64_t firstRequiredBlock,
+                                      uint16_t numBlocks);  // returns number of jobs pushed to queue
 
  private:
   ///////////////////////////////////////////////////////////////////////////

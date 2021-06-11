@@ -1302,6 +1302,19 @@ void BCStateTran::sourceGetBlock(block_fetcher_context *ctx) {
   ConcordAssertGT(ctx->size, 0);
 }
 
+uint16_t BCStateTran::asyncFetchBlocksConcurrent(uint64_t nextBlockId, uint64_t firstRequiredBlock, uint16_t numBlocks) {
+  static const auto getBlock_func = std::bind(&BCStateTran::sourceGetBlock, this, _1);
+  auto blocksToFetch = std::min(config_.maxNumberOfChunksInBatch, numBlocks);
+  uint16_t j = 0;
+
+  for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < blocksToFetch); --i, ++j) {
+    src_fetchers_context_[j].blockId = i;
+    src_fetchers_context_[j].future = src_block_fetchers_pool_.async(getBlock_func, &src_fetchers_context_[j]);
+  }
+
+  return j;
+}
+
 bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t replicaId) {
   SCOPED_MDC_SEQ_NUM(getSequenceNumber(replicaId, m->msgSeqNum));
   LOG_DEBUG(getLogger(), "");
@@ -1353,23 +1366,11 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   uint16_t nextChunk = m->lastKnownChunkInLastRequiredBlock + 1;
   uint16_t numOfSentChunks = 0;
 
-  // push enough work to be done by workers
-  auto getBlock_func = std::bind(&BCStateTran::sourceGetBlock, this, _1);
-  // LOG_DEBUG(
-  //     getLogger(),
-  //     "xxx before calling to pool..." << KVLOG(m->firstRequiredBlock, nextBlockId,
-  //     config_.maxNumberOfChunksInBatch));
-  for (uint64_t i{nextBlockId}, j{0}; (i >= m->firstRequiredBlock) && (j < config_.maxNumberOfChunksInBatch);
-       --i, ++j) {
-    // LOG_DEBUG(
-    //     getLogger(),
-    //     "xxx 1 " << KVLOG(j, (uintptr_t)src_fetchers_context_[j].buffer, (uintptr_t)&src_fetchers_context_[j].size));
-    src_fetchers_context_[j].blockId = i;
-    src_fetchers_context_[j].future = src_block_fetchers_pool_.async(getBlock_func, &src_fetchers_context_[j]);
-    // LOG_DEBUG(getLogger(), "xxx done iteration " << KVLOG(i, j));
-    // src_fetchers_context_[j].future.get();
+  if (!src_fetchers_context_[0].future.valid() || src_fetchers_context_[0].blockId != nextBlockId) {
+    LOG_INFO(getLogger(), "Source blocks prefetch disabled: first batch or retransmission: " << 
+      KVLOG(src_fetchers_context_[0].blockId, nextBlockId));
+    asyncFetchBlocksConcurrent(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
   }
-  // LOG_DEBUG(getLogger(), "xxx done calling to pool...");
 
   // fetch blocks and send all chunks for the batch
   LOG_DEBUG(getLogger(),
@@ -1384,6 +1385,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
     histograms_.src_get_block_duration->record(ctx.fetch_block_duration_microsec);
     sizeOfNextBlock = ctx.size;
     buffer_ = ctx.buffer;
+    ConcordAssert(ctx.blockId == nextBlockId);
     // LOG_DEBUG(getLogger(), "xxx done wait for " << KVLOG(j, (uintptr_t)buffer_, sizeOfNextBlock));
     // LOG_DEBUG(getLogger(), "xxx buffer_:" << ::toString(buffer_, sizeOfNextBlock));
 
@@ -1461,7 +1463,11 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   histograms_.src_send_batch_size_blocks->record(batch_size_blocks);
   src_send_batch_duration_rec_.end();
 
-  LOG_WARN(getLogger(), "xxx done sending batch!");
+  // TODO - does it save much time to start calling this during loop?
+  --nextBlockId;
+  LOG_INFO(getLogger(), "Source blocks prefetch enabled: try prefetching next batch with " << KVLOG(nextBlockId));
+  asyncFetchBlocksConcurrent(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
+
   return false;
 }
 
