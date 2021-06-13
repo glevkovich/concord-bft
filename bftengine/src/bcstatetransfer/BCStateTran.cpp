@@ -50,6 +50,7 @@ using namespace std::placeholders;
 using namespace concord::diagnostics;
 
 extern std::string toString(char *buff, size_t bufSize);
+using namespace concord::util;
 
 namespace bftEngine {
 namespace bcst {
@@ -240,9 +241,10 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       bytes_collected_(get_missing_blocks_summary_window_size),
       first_collected_block_num_({}),
       workers_pool_(config_.numberOfWorkerThreads),
-      fetch_block_msg_latency_rec_(histograms_.fetch_blocks_msg_latency),
-      src_send_batch_duration_rec_(histograms_.src_send_batch_duration),
-      handoff_queue_idle_duration_rec_(histograms_.handoff_queue_idle_duration) {
+      //handoff_queue_idle_duration_rec_(histograms_.handoff_queue_idle_duration)
+      time_between_sendFetchBlocksMsg_rec_(histograms_.time_between_sendFetchBlocksMsg),
+      time_in_handoff_queue_rec_(histograms_.time_in_handoff_queue),
+      dest_block_from_chunks_duration_rec_(histograms_.dest_block_from_chunks_duration) {
   ConcordAssertNE(stateApi, nullptr);
   ConcordAssertGE(replicas_.size(), 3U * config_.fVal + 1U);
   ConcordAssert(replicas_.count(config_.myReplicaId) == 1 || config.isReadOnly);
@@ -640,7 +642,8 @@ void BCStateTran::startCollectingStats() {
   metrics_.prev_win_bytes_collected_.Get().Set(0ull);
   metrics_.prev_win_bytes_throughtput_.Get().Set(0ull);
 
-  fetch_block_msg_latency_rec_.clear();
+  time_between_sendFetchBlocksMsg_rec_.clear();
+  time_in_handoff_queue_rec_.clear();
   handoff_queue_idle_duration_rec_.clear();
   // memset(&total_processing_time_microsec_, 0, sizeof(total_processing_time_microsec_));
 }
@@ -665,7 +668,8 @@ void BCStateTran::startCollectingState() {
 // this function can be executed in context of another thread.
 void BCStateTran::onTimerImp() {
   if (!running_) return;
-  handoff_queue_idle_duration_rec_.end();
+  //handoff_queue_idle_duration_rec_.end();
+  time_in_handoff_queue_rec_.end();
   TimeRecorder scoped_timer(*histograms_.on_timer);
 
   metrics_.on_timer_.Get().Inc();
@@ -692,7 +696,8 @@ void BCStateTran::onTimerImp() {
   } else if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages) {
     processData();
   }
-  handoff_queue_idle_duration_rec_.start();
+  //handoff_queue_idle_duration_rec_.start();
+  time_in_handoff_queue_rec_.start();
 }
 
 std::string BCStateTran::getStatus() {
@@ -750,7 +755,8 @@ void BCStateTran::addOnTransferringCompleteCallback(std::function<void(uint64_t)
 // this function can be executed in context of another thread.
 void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint16_t senderId) {
   if (!running_) return;
-  handoff_queue_idle_duration_rec_.end();
+  //handoff_queue_idle_duration_rec_.end();
+  time_in_handoff_queue_rec_.end();
   bool invalidSender = (senderId >= (config_.numReplicas + config_.numRoReplicas));
   bool sentFromSelf = senderId == config_.myReplicaId;
   bool msgSizeTooSmall = msgLen < sizeof(BCStateTranBaseMsg);
@@ -826,7 +832,8 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
     histograms_.handle_state_transfer_msg->record(interval);
   }
   if (!noDelete) replicaForStateTransfer_->freeStateTransferMsg(msg);
-  handoff_queue_idle_duration_rec_.start();
+  //handoff_queue_idle_duration_rec_.start();
+  time_in_handoff_queue_rec_.start();
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1050,7 +1057,8 @@ void BCStateTran::sendFetchBlocksMsg(uint64_t firstRequiredBlock,
                   msg.lastKnownChunkInLastRequiredBlock));
 
   sourceSelector_.setFetchingTimeStamp(getLogger(), getMonotonicTimeMilli());
-  fetch_block_msg_latency_rec_.start(lastMsgSeqNum_);
+  time_between_sendFetchBlocksMsg_rec_.clear();
+  time_between_sendFetchBlocksMsg_rec_.start();
   replicaForStateTransfer_->sendStateTransferMessage(
       reinterpret_cast<char *>(&msg), sizeof(FetchBlocksMsg), sourceSelector_.currentReplica());
 }
@@ -1709,10 +1717,6 @@ bool BCStateTran::onMessage(const ItemDataMsg *m, uint32_t msgLen, uint16_t repl
     return false;
   }
 
-  if (getFetchingState() != FetchingState::GettingMissingResPages)
-    // record latencies for FetchResPagesMsg <-> ItemDataMsg
-    fetch_block_msg_latency_rec_.end(m->requestMsgSeqNum);
-
   //  const DataStore::CheckpointDesc fcp = psd_->getCheckpointBeingFetched();
   const uint64_t firstRequiredBlock = psd_->getFirstRequiredBlock();
   const uint64_t lastRequiredBlock = psd_->getLastRequiredBlock();
@@ -1768,7 +1772,6 @@ bool BCStateTran::onMessage(const ItemDataMsg *m, uint32_t msgLen, uint16_t repl
   bool added = false;
 
   tie(std::ignore, added) = pendingItemDataMsgs.insert(const_cast<ItemDataMsg *>(m));
-
   // set fetchingTimeStamp_ while ignoring added flag - source is responsive
   sourceSelector_.setFetchingTimeStamp(getLogger(), getMonotonicTimeMilli());
 
@@ -1954,6 +1957,8 @@ bool BCStateTran::getNextFullBlock(uint64_t requiredBlock,
                                    bool &outLastInBatch) {
   ConcordAssertGE(requiredBlock, 1);
 
+  dest_block_from_chunks_duration_rec_.clear();
+  dest_block_from_chunks_duration_rec_.start();
   const uint32_t maxSize = (isVBLock ? maxVBlockSize_ : config_.maxBlockSize);
   clearPendingItemsData(requiredBlock + 1);
 
@@ -2041,6 +2046,7 @@ bool BCStateTran::getNextFullBlock(uint64_t requiredBlock,
     if (currentChunk == totalNumberOfChunks) {
       outBlockSize = currentPos;
       outLastInBatch = lastInBatch;
+      dest_block_from_chunks_duration_rec_.end();
       return true;
     }
   }
@@ -2266,6 +2272,7 @@ void BCStateTran::processData() {
     // if needed, determine the next required block
     //////////////////////////////////////////////////////////////////////////
     if (nextRequiredBlock_ == 0) {
+      TimeRecorder scoped_timer(*histograms_.src_calc_next_required_block_duration);
       ConcordAssert(digestOfNextRequiredBlock.isZero());
 
       DataStore::CheckpointDesc cp = psd_->getCheckpointBeingFetched();
@@ -2311,6 +2318,7 @@ void BCStateTran::processData() {
     bool newBlockIsValid = false;
 
     if (newBlock && isGettingBlocks) {
+      TimeRecorder scoped_timer(*histograms_.dest_digest_calc_duration);
       ConcordAssert(!badDataFromCurrentSourceReplica);
       newBlockIsValid = checkBlock(nextRequiredBlock_, digestOfNextRequiredBlock, buffer_, actualBlockSize);
       badDataFromCurrentSourceReplica = !newBlockIsValid;
@@ -2342,15 +2350,16 @@ void BCStateTran::processData() {
       std::chrono::steady_clock::time_point commitToChainStartTime;
       if (lastBlock) commitToChainStartTime = std::chrono::steady_clock::now();
       LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
-      ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
+      {
+        TimeRecorder scoped_timer(*histograms_.dest_put_block_duration);
+        ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
+      }
       if (lastBlock) {
         LOG_DEBUG(
             getLogger(),
             "Commit to chain done! total duration: " << std::chrono::duration_cast<std::chrono::milliseconds>(
                                                             std::chrono::steady_clock::now() - commitToChainStartTime)
                                                             .count());
-      }
-
       reportCollectingStatus(firstRequiredBlock, actualBlockSize);
       if (!lastBlock) {
         as_->getPrevDigestFromBlock(nextRequiredBlock_,
@@ -2360,6 +2369,7 @@ void BCStateTran::processData() {
         if (lastInBatch) {
           //  last block in batch - send another FetchBlocksMsg since we havn't reach yet to firstRequiredBlock
           ConcordAssertEQ(psd_->getLastRequiredBlock(), nextRequiredBlock_);
+          time_between_sendFetchBlocksMsg_rec_.end();
           LOG_DEBUG(getLogger(), "Sending FetchBlocksMsg: lastInBatch is true");
           sendFetchBlocksMsg(psd_->getFirstRequiredBlock(), nextRequiredBlock_, 0);
           break;
@@ -2478,7 +2488,7 @@ void BCStateTran::processData() {
 
 void BCStateTran::checkConsistency(bool checkAllBlocks) {
   ConcordAssert(psd_->initialized());
-
+  TimeRecorder scoped_timer(*histograms_.consistency_check_duration);
   const uint64_t lastReachableBlockNum = as_->getLastReachableBlockNum();
   const uint64_t lastBlockNum = as_->getLastBlockNum();
   const uint64_t genesisBlockNum = as_->getGenesisBlockNum();
