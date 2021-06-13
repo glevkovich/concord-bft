@@ -1304,14 +1304,15 @@ void BCStateTran::sourceGetBlock(block_fetcher_context *ctx) {
 
 uint16_t BCStateTran::asyncSourceFetchBlocksConcurrent(uint64_t nextBlockId,
                                                        uint64_t firstRequiredBlock,
-                                                       uint16_t numBlocks) {
-  static const auto getBlockFunc = std::bind(&BCStateTran::sourceGetBlock, this, _1);
-  auto blocksToFetch = std::min(config_.maxNumberOfChunksInBatch, numBlocks);
-  uint16_t j = 0;
+                                                       uint16_t numBlocks,
+                                                       size_t startContextIndex) {
+  auto numBlocksToFetch{std::min(config_.maxNumberOfChunksInBatch, numBlocks)};
+  auto j{startContextIndex};
 
-  for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < blocksToFetch); --i, ++j) {
+  for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < startContextIndex + numBlocksToFetch); --i, ++j) {
     src_fetchers_context_[j].blockId = i;
-    src_fetchers_context_[j].future = workers_pool_.async(getBlockFunc, &src_fetchers_context_[j]);
+    src_fetchers_context_[j].future =
+        workers_pool_.async(std::bind(&BCStateTran::sourceGetBlock, this, _1), &src_fetchers_context_[j]);
   }
 
   return j;
@@ -1378,20 +1379,25 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
     asyncSourceFetchBlocksConcurrent(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
   }
 
-  // fetch blocks and send all chunks for the batch
+  // fetch blocks and send all chunks for the batch. Also, while looping start to pre-fetch next batch
+  uint64_t preFetchBlockId =
+      (nextBlockId > config_.maxNumberOfChunksInBatch) ? (nextBlockId - config_.maxNumberOfChunksInBatch) : 0;
   LOG_DEBUG(getLogger(),
-            "Start sending batch: " << KVLOG(
-                m->msgSeqNum, m->firstRequiredBlock, m->lastRequiredBlock, m->lastKnownChunkInLastRequiredBlock));
-  size_t j = 0;
+            "Start sending batch: " << KVLOG(m->msgSeqNum,
+                                             m->firstRequiredBlock,
+                                             m->lastRequiredBlock,
+                                             m->lastKnownChunkInLastRequiredBlock,
+                                             preFetchBlockId));
+  size_t ctx_index = 0;
   do {
     // LOG_DEBUG(getLogger(), "xxx wait for j=" << j);
-    auto &ctx = src_fetchers_context_[j];
+    auto &ctx = src_fetchers_context_[ctx_index];
     ctx.future.get();
+    ConcordAssertEQ(ctx.blockId, nextBlockId);
     histograms_.src_get_block_size_bytes->record(ctx.size);
     histograms_.src_get_block_duration->record(ctx.fetch_block_duration_microsec);
     sizeOfNextBlock = ctx.size;
     buffer_ = ctx.buffer;
-    ConcordAssert(ctx.blockId == nextBlockId);
     // LOG_DEBUG(getLogger(), "xxx done wait for " << KVLOG(j, (uintptr_t)buffer_, sizeOfNextBlock));
     // LOG_DEBUG(getLogger(), "xxx buffer_:" << ::toString(buffer_, sizeOfNextBlock));
 
@@ -1461,7 +1467,14 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
       // no more chunks in the block
       --nextBlockId;
       nextChunk = 1;
-      ++j;
+      // this context is usage us done. We can now use it to prefetch future batch block
+      if (preFetchBlockId > 0) {
+        LOG_DEBUG(getLogger(),
+                  "asyncSourceFetchBlocksConcurrent: " << KVLOG(preFetchBlockId, m->firstRequiredBlock, 1, ctx_index));
+        asyncSourceFetchBlocksConcurrent(preFetchBlockId, m->firstRequiredBlock, 1, ctx_index);
+        --preFetchBlockId;
+      }
+      ++ctx_index;
     }
   } while (true);
 
@@ -1469,10 +1482,11 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   histograms_.src_send_batch_size_blocks->record(batch_size_blocks);
   src_send_batch_duration_rec_.end();
 
-  // TODO - does it save much time to start calling this during loop?
-  --nextBlockId;
-  LOG_INFO(getLogger(), "Source blocks prefetch enabled: try prefetching next batch with " << KVLOG(nextBlockId));
-  asyncSourceFetchBlocksConcurrent(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
+  if (preFetchBlockId > 0) {
+    LOG_DEBUG(getLogger(),
+              "asyncSourceFetchBlocksConcurrent: " << KVLOG(preFetchBlockId, m->firstRequiredBlock, 1, ctx_index));
+    asyncSourceFetchBlocksConcurrent(preFetchBlockId, m->firstRequiredBlock, 1, ctx_index);
+  }
 
   return false;
 }

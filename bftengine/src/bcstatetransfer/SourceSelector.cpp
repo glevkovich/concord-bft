@@ -47,13 +47,10 @@ bool SourceSelector::isReset() const {
 
 bool SourceSelector::retransmissionTimeoutExpired(uint64_t currTimeMilli) const {
   // TODO(GG): TBD - compute dynamically
-  return timeSinceSendMilli(currTimeMilli) > retransmissionTimeoutMilli_;
-}
-
-uint64_t SourceSelector::timeSinceSendMilli(uint64_t currTimeMilli) const {
-  return ((currentReplica_ == NO_REPLICA) || (currTimeMilli < fetchingTimeStamp_))
-             ? 0
-             : (currTimeMilli - fetchingTimeStamp_);
+  uint64_t timeSinceSendMilli = ((currentReplica_ == NO_REPLICA) || (currTimeMilli < fetchingTimeStamp_))
+                                    ? 0
+                                    : (currTimeMilli - fetchingTimeStamp_);
+  return timeSinceSendMilli > retransmissionTimeoutMilli_;
 }
 
 uint64_t SourceSelector::timeSinceSourceSelectedMilli(uint64_t currTimeMilli) const {

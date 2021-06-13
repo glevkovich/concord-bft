@@ -472,7 +472,8 @@ class BCStateTran : public IStateTransfer {
   // returns number of jobs pushed to queue
   uint16_t asyncSourceFetchBlocksConcurrent(uint64_t nextBlockId,
                                             uint64_t firstRequiredBlock,
-                                            uint16_t numBlocks);
+                                            uint16_t numBlocks,
+                                            size_t startContextIndex = 0);
 
  private:
   ///////////////////////////////////////////////////////////////////////////
