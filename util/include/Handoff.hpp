@@ -76,6 +76,10 @@ class Handoff {
   func_type pop() {
     while (true) {
       std::unique_lock<std::mutex> ul(queue_lock_);
+      // TODO(GL) - remove next line
+      LOG_INFO(getLogger(),
+               "queue size: " << task_queue_.size() << std::boolalpha << " empty? " << task_queue_.empty()
+                              << std::noboolalpha);
       if (task_queue_.empty()) {
         auto start = std::chrono::steady_clock::now();
         queue_cond_.wait(ul, [this] { return !(task_queue_.empty() && !stopped_); });
