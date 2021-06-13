@@ -553,9 +553,12 @@ class BCStateTran : public IStateTransfer {
   };
   Recorders histograms_;
 
-  // Async time recorders - wrap the above shared recorders
-  AsyncTimeRecorder<true> src_send_batch_duration_rec_;      // TODO - need atomic? for now yes (safety), analyaze later
-  AsyncTimeRecorder<true> handoff_queue_idle_duration_rec_;  // TODO - need atomic? for now yes (safety), analyaze later
+  // Async time recorders - wrap the above shared recorders with the same name and prefix _rec_
+  // TODO(GL) - for all async recorders - need atomic? for now yes (safety), analyaze later
+  AsyncTimeRecorder<true> src_send_batch_duration_rec_;
+  AsyncTimeRecorder<true> time_between_sendFetchBlocksMsg_rec_;
+  AsyncTimeRecorder<true> time_in_handoff_queue_rec_;
+  AsyncTimeRecorder<true> dest_block_from_chunks_duration_rec_;
 
   // An array of size MsgTypeLast which holds the total processing time for each message size during ST cycle.
   // index 0 holds the total for all messages

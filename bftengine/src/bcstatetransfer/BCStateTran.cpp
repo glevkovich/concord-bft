@@ -241,7 +241,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       bytes_collected_(get_missing_blocks_summary_window_size),
       first_collected_block_num_({}),
       workers_pool_(config_.numberOfWorkerThreads),
-      //handoff_queue_idle_duration_rec_(histograms_.handoff_queue_idle_duration)
+      src_send_batch_duration_rec_(histograms_.src_send_batch_duration),
       time_between_sendFetchBlocksMsg_rec_(histograms_.time_between_sendFetchBlocksMsg),
       time_in_handoff_queue_rec_(histograms_.time_in_handoff_queue),
       dest_block_from_chunks_duration_rec_(histograms_.dest_block_from_chunks_duration) {
@@ -644,7 +644,6 @@ void BCStateTran::startCollectingStats() {
 
   time_between_sendFetchBlocksMsg_rec_.clear();
   time_in_handoff_queue_rec_.clear();
-  handoff_queue_idle_duration_rec_.clear();
   // memset(&total_processing_time_microsec_, 0, sizeof(total_processing_time_microsec_));
 }
 
@@ -668,7 +667,6 @@ void BCStateTran::startCollectingState() {
 // this function can be executed in context of another thread.
 void BCStateTran::onTimerImp() {
   if (!running_) return;
-  //handoff_queue_idle_duration_rec_.end();
   time_in_handoff_queue_rec_.end();
   TimeRecorder scoped_timer(*histograms_.on_timer);
 
@@ -696,7 +694,6 @@ void BCStateTran::onTimerImp() {
   } else if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages) {
     processData();
   }
-  //handoff_queue_idle_duration_rec_.start();
   time_in_handoff_queue_rec_.start();
 }
 
@@ -755,7 +752,6 @@ void BCStateTran::addOnTransferringCompleteCallback(std::function<void(uint64_t)
 // this function can be executed in context of another thread.
 void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint16_t senderId) {
   if (!running_) return;
-  //handoff_queue_idle_duration_rec_.end();
   time_in_handoff_queue_rec_.end();
   bool invalidSender = (senderId >= (config_.numReplicas + config_.numRoReplicas));
   bool sentFromSelf = senderId == config_.myReplicaId;
@@ -764,7 +760,7 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
     metrics_.received_illegal_msg_.Get().Inc();
     LOG_WARN(getLogger(), "Illegal message: " << KVLOG(msgLen, senderId, msgSizeTooSmall, sentFromSelf, invalidSender));
     replicaForStateTransfer_->freeStateTransferMsg(msg);
-    handoff_queue_idle_duration_rec_.start();
+    time_in_handoff_queue_rec_.start();
     return;
   }
   bool msg_processed = false;
@@ -832,7 +828,6 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
     histograms_.handle_state_transfer_msg->record(interval);
   }
   if (!noDelete) replicaForStateTransfer_->freeStateTransferMsg(msg);
-  //handoff_queue_idle_duration_rec_.start();
   time_in_handoff_queue_rec_.start();
 }
 
@@ -2360,6 +2355,7 @@ void BCStateTran::processData() {
             "Commit to chain done! total duration: " << std::chrono::duration_cast<std::chrono::milliseconds>(
                                                             std::chrono::steady_clock::now() - commitToChainStartTime)
                                                             .count());
+      }
       reportCollectingStatus(firstRequiredBlock, actualBlockSize);
       if (!lastBlock) {
         as_->getPrevDigestFromBlock(nextRequiredBlock_,
