@@ -240,11 +240,10 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       blocks_collected_(get_missing_blocks_summary_window_size),
       bytes_collected_(get_missing_blocks_summary_window_size),
       first_collected_block_num_({}),
-      workers_pool_(config_.numberOfWorkerThreads),
+      workers_pool_((config_.numberOfWorkerThreads > 0) ? config_.numberOfWorkerThreads : std::thread::hardware_concurrency()),
       src_send_batch_duration_rec_(histograms_.src_send_batch_duration),
-      time_between_sendFetchBlocksMsg_rec_(histograms_.dst_time_between_sendFetchBlocksMsg),
-      time_in_handoff_queue_rec_(histograms_.time_in_handoff_queue),
-      dest_block_from_chunks_duration_rec_(histograms_.dst_block_from_chunks_duration) {
+      dst_time_between_sendFetchBlocksMsg_rec_(histograms_.dst_time_between_sendFetchBlocksMsg),
+      time_in_handoff_queue_rec_(histograms_.time_in_handoff_queue) {
   ConcordAssertNE(stateApi, nullptr);
   ConcordAssertGE(replicas_.size(), 3U * config_.fVal + 1U);
   ConcordAssert(replicas_.count(config_.myReplicaId) == 1 || config.isReadOnly);
@@ -643,9 +642,8 @@ void BCStateTran::startCollectingStats() {
   metrics_.prev_win_bytes_throughtput_.Get().Set(0ull);
 
   src_send_batch_duration_rec_.clear();
-  time_between_sendFetchBlocksMsg_rec_.clear();
+  dst_time_between_sendFetchBlocksMsg_rec_.clear();
   time_in_handoff_queue_rec_.clear();
-  dest_block_from_chunks_duration_rec_.clear();
 }
 
 void BCStateTran::startCollectingState() {
@@ -1049,8 +1047,8 @@ void BCStateTran::sendFetchBlocksMsg(uint64_t firstRequiredBlock,
                   msg.lastKnownChunkInLastRequiredBlock));
 
   sourceSelector_.setFetchingTimeStamp(getLogger(), getMonotonicTimeMilli());
-  time_between_sendFetchBlocksMsg_rec_.clear();
-  time_between_sendFetchBlocksMsg_rec_.start();
+  dst_time_between_sendFetchBlocksMsg_rec_.clear();
+  dst_time_between_sendFetchBlocksMsg_rec_.start();
   replicaForStateTransfer_->sendStateTransferMessage(
       reinterpret_cast<char *>(&msg), sizeof(FetchBlocksMsg), sourceSelector_.currentReplica());
 }
@@ -1949,8 +1947,6 @@ bool BCStateTran::getNextFullBlock(uint64_t requiredBlock,
                                    bool &outLastInBatch) {
   ConcordAssertGE(requiredBlock, 1);
 
-  dest_block_from_chunks_duration_rec_.clear();
-  dest_block_from_chunks_duration_rec_.start();
   const uint32_t maxSize = (isVBLock ? maxVBlockSize_ : config_.maxBlockSize);
   clearPendingItemsData(requiredBlock + 1);
 
@@ -2038,7 +2034,6 @@ bool BCStateTran::getNextFullBlock(uint64_t requiredBlock,
     if (currentChunk == totalNumberOfChunks) {
       outBlockSize = currentPos;
       outLastInBatch = lastInBatch;
-      dest_block_from_chunks_duration_rec_.end();
       return true;
     }
   }
@@ -2362,7 +2357,7 @@ void BCStateTran::processData() {
         if (lastInBatch) {
           //  last block in batch - send another FetchBlocksMsg since we havn't reach yet to firstRequiredBlock
           ConcordAssertEQ(psd_->getLastRequiredBlock(), nextRequiredBlock_);
-          time_between_sendFetchBlocksMsg_rec_.end();
+          dst_time_between_sendFetchBlocksMsg_rec_.end();
           LOG_DEBUG(getLogger(), "Sending FetchBlocksMsg: lastInBatch is true");
           sendFetchBlocksMsg(psd_->getFirstRequiredBlock(), nextRequiredBlock_, 0);
           break;
@@ -2481,7 +2476,6 @@ void BCStateTran::processData() {
 
 void BCStateTran::checkConsistency(bool checkAllBlocks) {
   ConcordAssert(psd_->initialized());
-  TimeRecorder scoped_timer(*histograms_.consistency_check_duration);
   const uint64_t lastReachableBlockNum = as_->getLastReachableBlockNum();
   const uint64_t lastBlockNum = as_->getLastBlockNum();
   const uint64_t genesisBlockNum = as_->getGenesisBlockNum();

@@ -494,13 +494,11 @@ class BCStateTran : public IStateTransfer {
                                            on_timer,
                                            handle_state_transfer_msg,
                                            time_in_handoff_queue,
-                                           consistency_check_duration,
                                            // destination
                                            dst_handle_ItemData_msg,
                                            dst_time_between_sendFetchBlocksMsg,
                                            dst_put_block_duration,
                                            dst_digest_calc_duration,
-                                           dst_block_from_chunks_duration,
                                            // source
                                            src_handle_FetchBlocks_msg,
                                            src_get_block_duration,
@@ -520,8 +518,6 @@ class BCStateTran : public IStateTransfer {
         handle_state_transfer_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
         time_in_handoff_queue, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    DEFINE_SHARED_RECORDER(
-        consistency_check_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     // destination
     DEFINE_SHARED_RECORDER(
         dst_handle_ItemData_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
@@ -531,8 +527,6 @@ class BCStateTran : public IStateTransfer {
         dst_put_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
         dst_digest_calc_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    DEFINE_SHARED_RECORDER(
-        dst_block_from_chunks_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     // source
     DEFINE_SHARED_RECORDER(
         src_handle_FetchBlocks_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
@@ -551,9 +545,8 @@ class BCStateTran : public IStateTransfer {
   // Async time recorders - wrap the above shared recorders with the same name and prefix _rec_
   // TODO(GL) - for all async recorders - need atomic? for now yes (safety), analyaze later
   AsyncTimeRecorder<true> src_send_batch_duration_rec_;
-  AsyncTimeRecorder<true> time_between_sendFetchBlocksMsg_rec_;
+  AsyncTimeRecorder<true> dst_time_between_sendFetchBlocksMsg_rec_;
   AsyncTimeRecorder<true> time_in_handoff_queue_rec_;
-  AsyncTimeRecorder<true> dest_block_from_chunks_duration_rec_;
 };  // class BCStateTran
 
 }  // namespace bftEngine::bcst::impl
