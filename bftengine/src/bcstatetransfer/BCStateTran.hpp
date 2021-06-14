@@ -352,6 +352,27 @@ class BCStateTran : public IStateTransfer {
   // SIDE EFFECT: This function mutates buffer_ and resets it to 0 after the fact.
   STDigest getBlockAndComputeDigest(uint64_t currBlock);
 
+ protected:
+  ///////////////////////////////////////////////////////////////////////////
+  // worker threads
+  ///////////////////////////////////////////////////////////////////////////
+  struct block_fetcher_context {
+    uint64_t fetch_block_duration_microsec;
+    uint64_t blockId;
+    char* buffer;
+    uint32_t size;
+    std::future<void> future;
+  };
+
+  concord::util::ThreadPool workers_pool_;
+  std::vector<block_fetcher_context> src_fetchers_context_;
+
+  void sourceGetBlock(block_fetcher_context* ctx);
+  // returns number of jobs pushed to queue
+  uint16_t asyncSourceFetchBlocksConcurrent(uint64_t nextBlockId,
+                                            uint64_t firstRequiredBlock,
+                                            uint16_t numBlocks,
+                                            size_t startContextIndex = 0);
   ///////////////////////////////////////////////////////////////////////////
   // Metrics
   ///////////////////////////////////////////////////////////////////////////
@@ -444,36 +465,17 @@ class BCStateTran : public IStateTransfer {
   // Internal Statistics
   ///////////////////////////////////////////////////////////////////////////
  protected:
-  static constexpr uint32_t get_missing_blocks_summary_window_size = checkpointWindowSize;
+  static constexpr uint32_t getMissingBlocksSummaryWindowSize = (10 * checkpointWindowSize);
   Throughput blocks_collected_;
   Throughput bytes_collected_;
-  std::optional<uint64_t> first_collected_block_num_;
+  // used for logging
+  std::optional<uint64_t> firstCollectedBlockId_;
+  std::optional<uint64_t> lastCollectedBlockId_;
 
   // used to print periodic summary of recent checkpoints, and collected date while in state GettingMissingBlocks
   std::string logsForCollectingStatus(const uint64_t firstRequiredBlock);
-  void reportCollectingStatus(const uint64_t firstRequiredBlock, const uint32_t actualBlockSize);
+  void reportCollectingStatus(const uint64_t firstRequiredBlock, const uint32_t actualBlockSize, bool toLog = false);
   void startCollectingStats();
-
-  ///////////////////////////////////////////////////////////////////////////
-  // worker threads
-  ///////////////////////////////////////////////////////////////////////////
-  struct block_fetcher_context {
-    uint64_t fetch_block_duration_microsec;
-    uint64_t blockId;
-    char* buffer;
-    uint32_t size;
-    std::future<void> future;
-  };
-
-  concord::util::ThreadPool workers_pool_;
-  std::vector<block_fetcher_context> src_fetchers_context_;
-
-  void sourceGetBlock(block_fetcher_context* ctx);
-  // returns number of jobs pushed to queue
-  uint16_t asyncSourceFetchBlocksConcurrent(uint64_t nextBlockId,
-                                            uint64_t firstRequiredBlock,
-                                            uint16_t numBlocks,
-                                            size_t startContextIndex = 0);
 
  private:
   ///////////////////////////////////////////////////////////////////////////

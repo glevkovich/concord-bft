@@ -46,7 +46,8 @@ class Throughput {
 
   // Report amount of items processed since last report.
   // If window_size > 0: returns true if reached the end of a summary window, and started a new window
-  bool report(uint64_t items_processed = 1);
+  // trigger_calc_throughput is true: manually trigger end of window
+  bool report(uint64_t items_processed = 1, bool trigger_calc_throughput = false);
 
   struct Results {
     uint64_t elapsed_time_ms_;

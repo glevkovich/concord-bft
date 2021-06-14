@@ -25,7 +25,7 @@ void Throughput::start() {
   }
 }
 
-bool Throughput::report(uint64_t items_processed) {
+bool Throughput::report(uint64_t items_processed, bool trigger_calc_throughput) {
   ConcordAssert(started_);
 
   ++reports_counter_;
@@ -33,7 +33,7 @@ bool Throughput::report(uint64_t items_processed) {
 
   if (num_reports_per_window_ > 0ul) {
     current_window_stats_.results_.num_processed_items_ += items_processed;
-    if ((reports_counter_ % num_reports_per_window_) == 0ul) {
+    if (trigger_calc_throughput || ((reports_counter_ % num_reports_per_window_) == 0ul)) {
       // Calculate throughput every num_reports_per_window_ reports
       previous_window_stats_ = current_window_stats_;
       previous_window_index_ = (reports_counter_ - 1) / num_reports_per_window_;
