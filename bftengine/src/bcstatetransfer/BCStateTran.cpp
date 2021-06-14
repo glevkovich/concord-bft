@@ -230,17 +230,18 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
                metrics_component_.RegisterCounter("dst_handle_ItemData_msg"),
 
                metrics_component_.RegisterGauge("overall_blocks_collected", 0),
-               metrics_component_.RegisterGauge("overall_blocks_throughtput", 0),
+               metrics_component_.RegisterGauge("overall_blocks_throughput", 0),
                metrics_component_.RegisterGauge("overall_bytes_collected", 0),
-               metrics_component_.RegisterGauge("overall_bytes_throughtput", 0),
+               metrics_component_.RegisterGauge("overall_bytes_throughput", 0),
                metrics_component_.RegisterGauge("prev_win_blocks_collected", 0),
-               metrics_component_.RegisterGauge("prev_win_blocks_throughtput", 0),
+               metrics_component_.RegisterGauge("prev_win_blocks_throughput", 0),
                metrics_component_.RegisterGauge("prev_win_bytes_collected", 0),
-               metrics_component_.RegisterGauge("prev_win_bytes_throughtput", 0)},
+               metrics_component_.RegisterGauge("prev_win_bytes_throughput", 0)},
       blocks_collected_(get_missing_blocks_summary_window_size),
       bytes_collected_(get_missing_blocks_summary_window_size),
       first_collected_block_num_({}),
-      workers_pool_((config_.numberOfWorkerThreads > 0) ? config_.numberOfWorkerThreads : std::thread::hardware_concurrency()),
+      workers_pool_((config_.numberOfWorkerThreads > 0) ? config_.numberOfWorkerThreads
+                                                        : std::thread::hardware_concurrency()),
       src_send_batch_duration_rec_(histograms_.src_send_batch_duration),
       dst_time_between_sendFetchBlocksMsg_rec_(histograms_.dst_time_between_sendFetchBlocksMsg),
       time_in_handoff_queue_rec_(histograms_.time_in_handoff_queue) {
@@ -633,13 +634,13 @@ void BCStateTran::startCollectingStats() {
   first_collected_block_num_ = {};
 
   metrics_.overall_blocks_collected_.Get().Set(0ull);
-  metrics_.overall_blocks_throughtput_.Get().Set(0ull);
+  metrics_.overall_blocks_throughput_.Get().Set(0ull);
   metrics_.overall_bytes_collected_.Get().Set(0ull);
-  metrics_.overall_bytes_throughtput_.Get().Set(0ull);
+  metrics_.overall_bytes_throughput_.Get().Set(0ull);
   metrics_.prev_win_blocks_collected_.Get().Set(0ull);
-  metrics_.prev_win_blocks_throughtput_.Get().Set(0ull);
+  metrics_.prev_win_blocks_throughput_.Get().Set(0ull);
   metrics_.prev_win_bytes_collected_.Get().Set(0ull);
-  metrics_.prev_win_bytes_throughtput_.Get().Set(0ull);
+  metrics_.prev_win_bytes_throughput_.Get().Set(0ull);
 
   src_send_batch_duration_rec_.clear();
   dst_time_between_sendFetchBlocksMsg_rec_.clear();
@@ -2148,13 +2149,13 @@ void BCStateTran::reportCollectingStatus(const uint64_t firstRequiredBlock, cons
     auto prev_win_block_results = blocks_collected_.getPrevWinResults();
     auto prev_win_bytes_results = bytes_collected_.getPrevWinResults();
 
-    metrics_.overall_blocks_throughtput_.Get().Set(overall_block_results.throughput_);
-    metrics_.overall_bytes_throughtput_.Get().Set(overall_bytes_results.throughput_);
+    metrics_.overall_blocks_throughput_.Get().Set(overall_block_results.throughput_);
+    metrics_.overall_bytes_throughput_.Get().Set(overall_bytes_results.throughput_);
 
     metrics_.prev_win_blocks_collected_.Get().Set(prev_win_block_results.num_processed_items_);
-    metrics_.prev_win_blocks_throughtput_.Get().Set(prev_win_block_results.throughput_);
+    metrics_.prev_win_blocks_throughput_.Get().Set(prev_win_block_results.throughput_);
     metrics_.prev_win_bytes_collected_.Get().Set(prev_win_bytes_results.num_processed_items_);
-    metrics_.prev_win_bytes_throughtput_.Get().Set(prev_win_bytes_results.throughput_);
+    metrics_.prev_win_bytes_throughput_.Get().Set(prev_win_bytes_results.throughput_);
 
     LOG_INFO(getLogger(), logsForCollectingStatus(firstRequiredBlock));
   }
