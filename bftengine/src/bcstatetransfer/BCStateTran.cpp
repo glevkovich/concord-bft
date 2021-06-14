@@ -2328,7 +2328,6 @@ void BCStateTran::processData() {
     // if we have a new block
     //////////////////////////////////////////////////////////////////////////
     const uint64_t firstRequiredBlock = psd_->getFirstRequiredBlock();
-    uint64_t commitToKvBcDurationMillisec = 0;
     if (!lastCollectedBlockId_) lastCollectedBlockId_ = firstRequiredBlock;
     if (newBlockIsValid && isGettingBlocks) {
       DataStoreTransaction::Guard g(psd_->beginTransaction());
@@ -2348,9 +2347,9 @@ void BCStateTran::processData() {
         ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
       }
       if (lastBlock) {
-        commitToKvBcDurationMillisec = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                           std::chrono::steady_clock::now() - commitToChainStartTime)
-                                           .count();
+        commitToKvBcDurationMillisec_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                            std::chrono::steady_clock::now() - commitToChainStartTime)
+                                            .count();
       } else
         reportCollectingStatus(firstRequiredBlock, actualBlockSize);
       if (!lastBlock) {
@@ -2446,7 +2445,7 @@ void BCStateTran::processData() {
                                    << std::to_string(blocksCollectedResults.num_processed_items_) + " blocks and " +
                                           std::to_string(bytes_collected_.getOverallResults().num_processed_items_) +
                                           " Bytes,"
-                                   << KVLOG(commitToKvBcDurationMillisec));
+                                   << KVLOG(commitToKvBcDurationMillisec_));
       LOG_INFO(getLogger(),
                "Invoking onTransferringComplete callbacks for checkpoint number: " << KVLOG(cp.checkpointNum));
       metrics_.on_transferring_complete_.Get().Inc();
@@ -2465,7 +2464,7 @@ void BCStateTran::processData() {
       if (newSourceReplica || retransmissionTimeoutExpired) {
         if (isGettingBlocks) {
           ConcordAssertEQ(psd_->getLastRequiredBlock(), nextRequiredBlock_);
-          LOG_DEBUG(getLogger(), "Sending FetchBlocksMsg: " << KVLOG(newSourceReplica, retransmissionTimeoutExpired));
+          LOG_INFO(getLogger(), "Sending FetchBlocksMsg: " << KVLOG(newSourceReplica, retransmissionTimeoutExpired));
           sendFetchBlocksMsg(psd_->getFirstRequiredBlock(), nextRequiredBlock_, lastChunkInRequiredBlock);
         } else {
           sendFetchResPagesMsg(lastChunkInRequiredBlock);
