@@ -654,9 +654,11 @@ void BCStateTran::startCollectingStats() {
 
 void BCStateTran::startCollectingState() {
   LOG_INFO(getLogger(), "State Transfer cycle #" << ++cycleCounter_ << " started");
-
   ConcordAssert(running_);
   ConcordAssert(!isFetching());
+  auto &registrar = concord::diagnostics::RegistrarSingleton::getInstance();
+  registrar.perf.snapshot("state_transfer");
+  registrar.perf.snapshot("state_transfer_dest");
   metrics_.start_collecting_state_.Get().Inc();
   startCollectingStats();
 
@@ -2387,11 +2389,17 @@ void BCStateTran::processData() {
         ConcordAssertEQ(getFetchingState(), FetchingState::GettingMissingResPages);
 
         // Log histograms for destination when GettingMissingBlocks is done
-        auto &registrar = concord::diagnostics::RegistrarSingleton::getInstance();
-        registrar.perf.snapshot("state_transfer");
-        registrar.perf.snapshot("state_transfer_dest");
-        LOG_INFO(getLogger(), registrar.perf.toString(registrar.perf.get("state_transfer")));
-        LOG_INFO(getLogger(), registrar.perf.toString(registrar.perf.get("state_transfer_dest")));
+        // Do it for a cycle that lasted more than 10 seconds
+        auto duration = cycleDT_.calcDuration();
+        if (duration > 10000) {
+          auto &registrar = concord::diagnostics::RegistrarSingleton::getInstance();
+          registrar.perf.snapshot("state_transfer");
+          registrar.perf.snapshot("state_transfer_dest");
+          LOG_INFO(getLogger(), registrar.perf.toString(registrar.perf.get("state_transfer")));
+          LOG_INFO(getLogger(), registrar.perf.toString(registrar.perf.get("state_transfer_dest")));
+        } else
+          LOG_INFO(getLogger(),
+                   "skip logging snapshots, cycle is very short (not enough statistics)" << KVLOG(duration));
 
         LOG_DEBUG(getLogger(), "Moved to GettingMissingResPages");
         GettingMissingResPagesDT_.start();
