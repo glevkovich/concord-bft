@@ -61,10 +61,12 @@ class Handoff {
     {
       guard g(queue_lock_);
       task_queue_.push(std::move(f));
-      LOG_INFO(getLogger(), "pushed! queue size: " << task_queue_.size());
+      task_queue_size_ = task_queue_.size();
     }
     queue_cond_.notify_one();
   }
+
+  size_t size() { return task_queue_size_; }
 
  protected:
   class ThreadCanceledException : public std::runtime_error {
@@ -76,20 +78,11 @@ class Handoff {
   func_type pop() {
     while (true) {
       std::unique_lock<std::mutex> ul(queue_lock_);
-      // TODO(GL) - remove next line
-      LOG_INFO(getLogger(),
-               "queue size: " << task_queue_.size() << std::boolalpha << " empty? " << task_queue_.empty()
-                              << std::noboolalpha);
+
       if (task_queue_.empty()) {
-        auto start = std::chrono::steady_clock::now();
         queue_cond_.wait(ul, [this] { return !(task_queue_.empty() && !stopped_); });
-        auto duration = std::chrono::steady_clock::now() - start;
-        LOG_INFO(getLogger(),
-                 "notified stopped_: " << stopped_ << " queue size: " << task_queue_.size() << " time waited: "
-                                       << std::chrono::duration_cast<std::chrono::microseconds>(duration).count());
-      } else {
-        LOG_INFO(getLogger(), "queue is not empty. size: " << task_queue_.size());  // TOdO reduce to TRACE
       }
+      task_queue_size_ = task_queue_.size();
 
       if (!stopped_ || (stopped_ && !task_queue_.empty())) {
         func_type f = task_queue_.front();
@@ -111,6 +104,7 @@ class Handoff {
   std::condition_variable queue_cond_;
   std::atomic_bool stopped_{false};
   std::thread thread_;
-};
+  std::atomic_size_t task_queue_size_;
+};  // class Handoff
 
 }  // namespace concord::util

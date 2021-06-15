@@ -632,6 +632,7 @@ void BCStateTran::startCollectingStats() {
   bytes_collected_.start();
   firstCollectedBlockId_ = {};
   lastCollectedBlockId_ = {};
+  startCollectingStatsTime_ = steady_clock::now();
 
   metrics_.overall_blocks_collected_.Get().Set(0ull);
   metrics_.overall_blocks_throughput_.Get().Set(0ull);
@@ -668,6 +669,7 @@ void BCStateTran::startCollectingState() {
 void BCStateTran::onTimerImp() {
   if (!running_) return;
   time_in_handoff_queue_rec_.end();
+  histograms_.handoff_queue_size->record(handoff_->size());
   TimeRecorder scoped_timer(*histograms_.on_timer);
 
   metrics_.on_timer_.Get().Inc();
@@ -676,8 +678,7 @@ void BCStateTran::onTimerImp() {
 
   // Dump metrics to log
   FetchingState fs = getFetchingState();
-  auto currTimeForDumping =
-      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch());
+  auto currTimeForDumping = duration_cast<std::chrono::seconds>(steady_clock::now().time_since_epoch());
   if (currTimeForDumping - last_metrics_dump_time_ >= metrics_dump_interval_in_sec_) {
     last_metrics_dump_time_ = currTimeForDumping;
     LOG_INFO(getLogger(), "--BCStateTransfer metrics dump--" + metrics_component_.ToJson());
@@ -753,6 +754,7 @@ void BCStateTran::addOnTransferringCompleteCallback(std::function<void(uint64_t)
 void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint16_t senderId) {
   if (!running_) return;
   time_in_handoff_queue_rec_.end();
+  histograms_.handoff_queue_size->record(handoff_->size());
   bool invalidSender = (senderId >= (config_.numReplicas + config_.numRoReplicas));
   bool sentFromSelf = senderId == config_.myReplicaId;
   bool msgSizeTooSmall = msgLen < sizeof(BCStateTranBaseMsg);
@@ -764,7 +766,7 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
     return;
   }
   bool msg_processed = false;
-  auto start = std::chrono::steady_clock::now();
+  auto start = steady_clock::now();
   metrics_.handle_state_transfer_msg_.Get().Inc();
 
   BCStateTranBaseMsg *msgHeader = reinterpret_cast<BCStateTranBaseMsg *>(msg);
@@ -818,8 +820,7 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
   }
 
   if (msg_processed) {
-    uint64_t interval =
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
+    uint64_t interval = duration_cast<std::chrono::microseconds>(steady_clock::now() - start).count();
 
     histograms_.handle_state_transfer_msg->record(interval);
   }
@@ -906,8 +907,8 @@ static bool checkStructureOfVirtualBlock(char *virtualBlock, uint32_t virtualBlo
 ///////////////////////////////////////////////////////////////////////////
 
 uint64_t BCStateTran::uniqueMsgSeqNum() {
-  std::chrono::time_point<std::chrono::system_clock> n = std::chrono::system_clock::now();
-  const uint64_t milli = std::chrono::duration_cast<std::chrono::milliseconds>(n.time_since_epoch()).count();
+  std::chrono::time_point<system_clock> n = system_clock::now();
+  const uint64_t milli = duration_cast<milliseconds>(n.time_since_epoch()).count();
 
   if (milli > lastMilliOfUniqueFetchID_) {
     lastMilliOfUniqueFetchID_ = milli;
@@ -931,8 +932,8 @@ uint64_t BCStateTran::uniqueMsgSeqNum() {
 bool BCStateTran::checkValidityAndSaveMsgSeqNum(uint16_t replicaId, uint64_t msgSeqNum) {
   uint64_t milliMsgTime = ((msgSeqNum) >> (64 - 42));
 
-  time_point<std::chrono::system_clock> now = std::chrono::system_clock::now();
-  const uint64_t milliNow = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+  time_point<system_clock> now = system_clock::now();
+  const uint64_t milliNow = duration_cast<milliseconds>(now.time_since_epoch()).count();
   uint64_t diffMilli = ((milliMsgTime > milliNow) ? (milliMsgTime - milliNow) : (milliNow - milliMsgTime));
 
   if (diffMilli > config_.maxAcceptableMsgDelayMs) {
@@ -1292,10 +1293,10 @@ void BCStateTran::sourceGetBlock(block_fetcher_context *ctx) {
   bool tmp;
   ctx->size = 0;
   {
-    auto start = std::chrono::steady_clock::now();
+    auto start = steady_clock::now();
     tmp = as_->getBlock(ctx->blockId, ctx->buffer, &ctx->size);
-    auto end = std::chrono::steady_clock::now();
-    ctx->fetch_block_duration_microsec = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+    auto end = steady_clock::now();
+    ctx->fetch_block_duration_microsec = duration_cast<std::chrono::microseconds>(end - start).count();
   }
   ConcordAssert(tmp);
   ConcordAssertGT(ctx->size, 0);
@@ -2335,20 +2336,21 @@ void BCStateTran::processData() {
 
       ConcordAssertAND(lastChunkInRequiredBlock >= 1, actualBlockSize > 0);
       bool lastBlock = (firstRequiredBlock >= nextRequiredBlock_);
-      std::chrono::steady_clock::time_point commitToChainStartTime;
+      steady_clock::time_point commitToChainStartTime;
 
       // Report collecting status for every block collected. Log entry is created every fixed window
       // getMissingBlocksSummaryWindowSize If lastBlock is true: summarize the whole cycle without including "commit to
       // chain duration" and vblock. In that case last window might be less than tthe fixed
       // getMissingBlocksSummaryWindowSize
       reportCollectingStatus(firstRequiredBlock, actualBlockSize, lastBlock);
-      if (lastBlock) commitToChainStartTime = std::chrono::steady_clock::now();
+      if (lastBlock) commitToChainStartTime = steady_clock::now();
       LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
       {
         TimeRecorder scoped_timer(*histograms_.dst_put_block_duration);
         ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
         // TODO(GL) remove the next log line
-        LOG_DEBUG(getLogger(), "Added block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
+        LOG_DEBUG(getLogger(),
+                  "Added block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
       }
       if (!lastBlock) {
         as_->getPrevDigestFromBlock(nextRequiredBlock_,
@@ -2365,9 +2367,8 @@ void BCStateTran::processData() {
         }
       } else {
         // report collecting status (without vblock) into log
-        commitToKvBcDurationMillisec_ = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                            std::chrono::steady_clock::now() - commitToChainStartTime)
-                                            .count();
+        commitToChainDurationMillisec_ =
+            duration_cast<milliseconds>(steady_clock::now() - commitToChainStartTime).count();
         // this is the last block we need
         g.txn()->setFirstRequiredBlock(0);
         g.txn()->setLastRequiredBlock(0);
@@ -2437,16 +2438,18 @@ void BCStateTran::processData() {
 
       // Completion
       auto blocksCollectedResults = blocks_collected_.getOverallResults();
+      auto totalCycleDurationMillisec =
+          duration_cast<milliseconds>(steady_clock::now() - startCollectingStatsTime_).count();
       LOG_INFO(
           getLogger(),
-          "State Transfer cycle #" << cycleCounter_
-                                   << " ended, Total Duration: " << blocksCollectedResults.elapsed_time_ms_
-                                   << "ms, Collected Range [" << std::to_string(lastCollectedBlockId_.value()) << ", "
-                                   << std::to_string(firstCollectedBlockId_.value()) << "], Collected "
+          "State Transfer cycle #" << cycleCounter_ << " ended, Total Duration: " << totalCycleDurationMillisec
+                                   << " ms, Time to fetch blocks: " << blocksCollectedResults.elapsed_time_ms_
+                                   << " ms, Time to commit to chain: " << commitToChainDurationMillisec_
+                                   << " ms, Collected blocks range [" << std::to_string(lastCollectedBlockId_.value())
+                                   << ", " << std::to_string(firstCollectedBlockId_.value()) << "], Collected "
                                    << std::to_string(blocksCollectedResults.num_processed_items_) + " blocks and " +
                                           std::to_string(bytes_collected_.getOverallResults().num_processed_items_) +
-                                          " Bytes,"
-                                   << KVLOG(commitToKvBcDurationMillisec_));
+                                          " bytes");
       LOG_INFO(getLogger(),
                "Invoking onTransferringComplete callbacks for checkpoint number: " << KVLOG(cp.checkpointNum));
       metrics_.on_transferring_complete_.Get().Inc();
