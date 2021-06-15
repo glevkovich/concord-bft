@@ -325,11 +325,16 @@ void BCStateTran::init(uint64_t maxNumOfRequiredStoredCheckpoints,
 
       if (fs != FetchingState::NotFetching) {
         startCollectingStats();
+        if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages)
+          SetAllReplicasAsPreferred();
+        if (fs == FetchingState::GettingCheckpointSummaries)
+          gettingCheckpointSummariesDT_.start();
+        else if (fs == FetchingState::GettingMissingBlocks)
+          gettingMissingBlocksDT_.start();
+        else if (fs == FetchingState::GettingMissingResPages)
+          GettingMissingResPagesDT_.start();
       }
 
-      if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages) {
-        SetAllReplicasAsPreferred();
-      }
       loadMetrics();
     } else {
       LOG_INFO(getLogger(), "Initializing a new object");
@@ -628,11 +633,10 @@ void BCStateTran::zeroReservedPage(uint32_t reservedPageId) {
 }
 
 void BCStateTran::startCollectingStats() {
-  blocks_collected_.start();
-  bytes_collected_.start();
   firstCollectedBlockId_ = {};
   lastCollectedBlockId_ = {};
-  startCollectingStatsTime_ = steady_clock::now();
+  cycleDT_.start();
+  gettingCheckpointSummariesDT_.start();
 
   metrics_.overall_blocks_collected_.Get().Set(0ull);
   metrics_.overall_blocks_throughput_.Get().Set(0ull);
@@ -1259,6 +1263,7 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
     clearInfoAboutGettingCheckpointSummary();
     lastMsgSeqNum_ = 0;
     metrics_.last_msg_seq_num_.Get().Set(0);
+    gettingCheckpointSummariesDT_.calcDuration();
 
     // check if we need to fetch blocks, or reserved pages
     const uint64_t lastReachableBlockNum = as_->getLastReachableBlockNum();
@@ -1273,9 +1278,15 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
                                                     fetchingState));
 
     if (newCheckpoint.lastBlock > lastReachableBlockNum) {
+      // fetch blocks
+      gettingMissingBlocksDT_.start();
+      blocks_collected_.start();
+      bytes_collected_.start();
       g.txn()->setFirstRequiredBlock(lastReachableBlockNum + 1);
       g.txn()->setLastRequiredBlock(newCheckpoint.lastBlock);
     } else {
+      // fetch reserved pages (vblock)
+      GettingMissingResPagesDT_.start();
       ConcordAssertEQ(newCheckpoint.lastBlock, lastReachableBlockNum);
       ConcordAssertEQ(g.txn()->getFirstRequiredBlock(), 0);
       ConcordAssertEQ(g.txn()->getLastRequiredBlock(), 0);
@@ -2336,21 +2347,20 @@ void BCStateTran::processData() {
 
       ConcordAssertAND(lastChunkInRequiredBlock >= 1, actualBlockSize > 0);
       bool lastBlock = (firstRequiredBlock >= nextRequiredBlock_);
-      steady_clock::time_point commitToChainStartTime;
 
       // Report collecting status for every block collected. Log entry is created every fixed window
       // getMissingBlocksSummaryWindowSize If lastBlock is true: summarize the whole cycle without including "commit to
       // chain duration" and vblock. In that case last window might be less than tthe fixed
       // getMissingBlocksSummaryWindowSize
       reportCollectingStatus(firstRequiredBlock, actualBlockSize, lastBlock);
-      if (lastBlock) commitToChainStartTime = steady_clock::now();
+      if (lastBlock) {
+        gettingMissingBlocksDT_.calcDuration();
+        commitToChainDT_.start();
+      }
       LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
       {
         TimeRecorder scoped_timer(*histograms_.dst_put_block_duration);
         ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
-        // TODO(GL) remove the next log line
-        LOG_DEBUG(getLogger(),
-                  "Added block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
       }
       if (!lastBlock) {
         as_->getPrevDigestFromBlock(nextRequiredBlock_,
@@ -2366,10 +2376,9 @@ void BCStateTran::processData() {
           break;
         }
       } else {
-        // report collecting status (without vblock) into log
-        commitToChainDurationMillisec_ =
-            duration_cast<milliseconds>(steady_clock::now() - commitToChainStartTime).count();
         // this is the last block we need
+        // report collecting status (without vblock) into log
+        commitToChainDT_.calcDuration();
         g.txn()->setFirstRequiredBlock(0);
         g.txn()->setLastRequiredBlock(0);
         clearAllPendingItemsData();
@@ -2378,7 +2387,13 @@ void BCStateTran::processData() {
 
         ConcordAssertEQ(getFetchingState(), FetchingState::GettingMissingResPages);
 
+        // Log histograms for destination when GettingMissingBlocks is done
+        auto &registrar = concord::diagnostics::RegistrarSingleton::getInstance();
+        registrar.perf.snapshot("state_transfer");
+        LOG_INFO(getLogger(), registrar.perf.toString(registrar.perf.get("state_transfer")));
+
         LOG_DEBUG(getLogger(), "Moved to GettingMissingResPages");
+        GettingMissingResPagesDT_.start();
         sendFetchResPagesMsg(0);
         break;
       }
@@ -2431,25 +2446,19 @@ void BCStateTran::processData() {
 
       checkConsistency(config_.pedanticChecks);
 
-      // Log latencies
-      auto &registrar = concord::diagnostics::RegistrarSingleton::getInstance();
-      registrar.perf.snapshot("state_transfer");
-      LOG_INFO(getLogger(), registrar.perf.toString(registrar.perf.get("state_transfer")));
-
       // Completion
       auto blocksCollectedResults = blocks_collected_.getOverallResults();
-      auto totalCycleDurationMillisec =
-          duration_cast<milliseconds>(steady_clock::now() - startCollectingStatsTime_).count();
-      LOG_INFO(
-          getLogger(),
-          "State Transfer cycle #" << cycleCounter_ << " ended, Total Duration: " << totalCycleDurationMillisec
-                                   << " ms, Time to fetch blocks: " << blocksCollectedResults.elapsed_time_ms_
-                                   << " ms, Time to commit to chain: " << commitToChainDurationMillisec_
-                                   << " ms, Collected blocks range [" << std::to_string(lastCollectedBlockId_.value())
-                                   << ", " << std::to_string(firstCollectedBlockId_.value()) << "], Collected "
-                                   << std::to_string(blocksCollectedResults.num_processed_items_) + " blocks and " +
-                                          std::to_string(bytes_collected_.getOverallResults().num_processed_items_) +
-                                          " bytes");
+      LOG_INFO(getLogger(),
+               "State Transfer cycle #"
+                   << cycleCounter_ << " ended, Total Duration: " << cycleDT_.calcDuration()
+                   << " ms, Time get checkpoint summaries: " << gettingCheckpointSummariesDT_.duration()
+                   << " ms, Time to fetch missing blocks: " << gettingMissingBlocksDT_.duration()
+                   << " ms, Time to commit to chain: " << commitToChainDT_.duration()
+                   << " ms, Time to get reserved pages (vblock): " << GettingMissingResPagesDT_.calcDuration()
+                   << " ms, Collected blocks range [" << std::to_string(lastCollectedBlockId_.value()) << ", "
+                   << std::to_string(firstCollectedBlockId_.value()) << "], Collected "
+                   << std::to_string(blocksCollectedResults.num_processed_items_) + " blocks and " +
+                          std::to_string(bytes_collected_.getOverallResults().num_processed_items_) + " bytes");
       LOG_INFO(getLogger(),
                "Invoking onTransferringComplete callbacks for checkpoint number: " << KVLOG(cp.checkpointNum));
       metrics_.on_transferring_complete_.Get().Inc();
