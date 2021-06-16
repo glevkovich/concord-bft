@@ -2460,7 +2460,7 @@ void BCStateTran::processData() {
       LOG_INFO(getLogger(),
                "State Transfer cycle #"
                    << cycleCounter_ << " ended, Total Duration: " << cycleDT_.calcDuration()
-                   << " ms, Time get checkpoint summaries: " << gettingCheckpointSummariesDT_.duration()
+                   << " ms, Time to get checkpoint summaries: " << gettingCheckpointSummariesDT_.duration()
                    << " ms, Time to fetch missing blocks: " << gettingMissingBlocksDT_.duration()
                    << " ms, Time to commit to chain: " << commitToChainDT_.duration()
                    << " ms, Time to get reserved pages (vblock): " << GettingMissingResPagesDT_.calcDuration()
