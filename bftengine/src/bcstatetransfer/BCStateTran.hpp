@@ -357,15 +357,15 @@ class BCStateTran : public IStateTransfer {
   // worker threads
   ///////////////////////////////////////////////////////////////////////////
   struct block_fetcher_context {
-    uint64_t fetch_block_duration_microsec;
+    uint64_t fetchBlockDurationMicrosec;
     uint64_t blockId;
     char* buffer;
     uint32_t size;
     std::future<void> future;
   };
 
-  concord::util::ThreadPool workers_pool_;
-  std::vector<block_fetcher_context> src_fetchers_context_;
+  concord::util::ThreadPool workersPool_;
+  std::vector<block_fetcher_context> srcFetchersContext_;
 
   void sourceGetBlock(block_fetcher_context* ctx);
   // returns number of jobs pushed to queue
@@ -470,27 +470,33 @@ class BCStateTran : public IStateTransfer {
   Throughput bytes_collected_;
   std::optional<uint64_t> firstCollectedBlockId_;
   std::optional<uint64_t> lastCollectedBlockId_;
+  std::vector<uint16_t> sources_;
 
-  // Duration Trakkers
+  // Duration Trackers
   template <typename T>
   class DurationTracker {
    public:
     uint64_t calcDuration() {
-      durationMillisec_ = std::chrono::duration_cast<T>(std::chrono::steady_clock::now() - startTime_).count();
+      if (startTime_ != std::nullopt)
+        durationMillisec_ =
+            std::chrono::duration_cast<T>(std::chrono::steady_clock::now() - startTime_.value()).count();
+      else
+        durationMillisec_ = 0;
       return durationMillisec_;
     }
+    void reset() { startTime_ = std::nullopt; }
     void start() { startTime_ = std::chrono::steady_clock::now(); }
     uint64_t duration() { return durationMillisec_; };
 
    private:
     uint64_t durationMillisec_;
-    std::chrono::time_point<std::chrono::steady_clock> startTime_;
+    std::optional<std::chrono::time_point<std::chrono::steady_clock>> startTime_;
   };
   DurationTracker<std::chrono::milliseconds> cycleDT_;
   DurationTracker<std::chrono::milliseconds> commitToChainDT_;
   DurationTracker<std::chrono::milliseconds> gettingCheckpointSummariesDT_;
   DurationTracker<std::chrono::milliseconds> gettingMissingBlocksDT_;
-  DurationTracker<std::chrono::milliseconds> GettingMissingResPagesDT_;
+  DurationTracker<std::chrono::milliseconds> gettingMissingResPagesDT_;
 
   // used to print periodic summary of recent checkpoints, and collected date while in state GettingMissingBlocks
   std::string logsForCollectingStatus(const uint64_t firstRequiredBlock);

@@ -20,6 +20,7 @@
 #include <sstream>
 #include <functional>
 #include <utility>
+#include <iterator>
 
 #include "assertUtils.hpp"
 #include "hex_tools.h"
@@ -161,8 +162,8 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       randomGen_{randomDevice_()},
       sourceSelector_{
           allOtherReplicas(), config_.fetchRetransmissionTimeoutMs, config_.sourceReplicaReplacementTimeoutMs},
-      workers_pool_((config_.numberOfWorkerThreads > 0) ? config_.numberOfWorkerThreads
-                                                        : std::thread::hardware_concurrency()),
+      workersPool_((config_.numberOfWorkerThreads > 0) ? config_.numberOfWorkerThreads
+                                                       : std::thread::hardware_concurrency()),
       last_metrics_dump_time_(0),
       metrics_dump_interval_in_sec_{std::chrono::seconds(config_.metricsDumpIntervalSec)},
       metrics_component_{
@@ -252,8 +253,8 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
   // Register metrics component with the default aggregator.
   metrics_component_.Register();
 
-  src_fetchers_context_.resize(config_.maxNumberOfChunksInBatch);
-  for (auto &context : src_fetchers_context_) {
+  srcFetchersContext_.resize(config_.maxNumberOfChunksInBatch);
+  for (auto &context : srcFetchersContext_) {
     context.buffer = new char[config_.maxBlockSize];
   }
   buffer_ = new char[maxItemSize_]{};
@@ -278,7 +279,7 @@ BCStateTran::~BCStateTran() {
   ConcordAssert(pendingItemDataMsgs.empty());
 
   delete[] buffer_;
-  for (auto &context : src_fetchers_context_) {
+  for (auto &context : srcFetchersContext_) {
     delete[] context.buffer;
   }
 }
@@ -332,7 +333,7 @@ void BCStateTran::init(uint64_t maxNumOfRequiredStoredCheckpoints,
         else if (fs == FetchingState::GettingMissingBlocks)
           gettingMissingBlocksDT_.start();
         else if (fs == FetchingState::GettingMissingResPages)
-          GettingMissingResPagesDT_.start();
+          gettingMissingResPagesDT_.start();
       }
 
       loadMetrics();
@@ -635,8 +636,12 @@ void BCStateTran::zeroReservedPage(uint32_t reservedPageId) {
 void BCStateTran::startCollectingStats() {
   firstCollectedBlockId_ = {};
   lastCollectedBlockId_ = {};
+  gettingMissingBlocksDT_.reset();
+  commitToChainDT_.reset();
+  gettingCheckpointSummariesDT_.reset();
+  gettingMissingResPagesDT_.reset();
   cycleDT_.start();
-  gettingCheckpointSummariesDT_.start();
+  sources_.clear();
 
   metrics_.overall_blocks_collected_.Get().Set(0ull);
   metrics_.overall_blocks_throughput_.Get().Set(0ull);
@@ -653,7 +658,7 @@ void BCStateTran::startCollectingStats() {
 }
 
 void BCStateTran::startCollectingState() {
-  LOG_INFO(getLogger(), "State Transfer cycle #" << ++cycleCounter_ << " started");
+  LOG_INFO(getLogger(), "State Transfer cycle started (#" << ++cycleCounter_ << ")");
   ConcordAssert(running_);
   ConcordAssert(!isFetching());
   auto &registrar = concord::diagnostics::RegistrarSingleton::getInstance();
@@ -661,6 +666,7 @@ void BCStateTran::startCollectingState() {
   registrar.perf.snapshot("state_transfer_dest");
   metrics_.start_collecting_state_.Get().Inc();
   startCollectingStats();
+  gettingCheckpointSummariesDT_.start();
 
   verifyEmptyInfoAboutGettingCheckpointSummary();
   {  // txn scope
@@ -1288,7 +1294,7 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
       g.txn()->setLastRequiredBlock(newCheckpoint.lastBlock);
     } else {
       // fetch reserved pages (vblock)
-      GettingMissingResPagesDT_.start();
+      gettingMissingResPagesDT_.start();
       ConcordAssertEQ(newCheckpoint.lastBlock, lastReachableBlockNum);
       ConcordAssertEQ(g.txn()->getFirstRequiredBlock(), 0);
       ConcordAssertEQ(g.txn()->getLastRequiredBlock(), 0);
@@ -1309,7 +1315,7 @@ void BCStateTran::sourceGetBlock(block_fetcher_context *ctx) {
     auto start = steady_clock::now();
     tmp = as_->getBlock(ctx->blockId, ctx->buffer, &ctx->size);
     auto end = steady_clock::now();
-    ctx->fetch_block_duration_microsec = duration_cast<std::chrono::microseconds>(end - start).count();
+    ctx->fetchBlockDurationMicrosec = duration_cast<std::chrono::microseconds>(end - start).count();
   }
   ConcordAssert(tmp);
   ConcordAssertGT(ctx->size, 0);
@@ -1323,9 +1329,9 @@ uint16_t BCStateTran::asyncSourceFetchBlocksConcurrent(uint64_t nextBlockId,
   auto j{startContextIndex};
 
   for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < startContextIndex + numBlocksToFetch); --i, ++j) {
-    src_fetchers_context_[j].blockId = i;
-    src_fetchers_context_[j].future =
-        workers_pool_.async(std::bind(&BCStateTran::sourceGetBlock, this, _1), &src_fetchers_context_[j]);
+    srcFetchersContext_[j].blockId = i;
+    srcFetchersContext_[j].future =
+        workersPool_.async(std::bind(&BCStateTran::sourceGetBlock, this, _1), &srcFetchersContext_[j]);
   }
 
   return j;
@@ -1374,8 +1380,8 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   }
 
   // start recording time to send a whole batch, and its size
-  uint64_t batch_size_bytes = 0;
-  uint64_t batch_size_blocks = 0;
+  uint64_t batchSizeBytes = 0;
+  uint64_t batchSizeBlocks = 0;
   src_send_batch_duration_rec_.clear();
   src_send_batch_duration_rec_.start();
 
@@ -1385,10 +1391,10 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   uint16_t nextChunk = m->lastKnownChunkInLastRequiredBlock + 1;
   uint16_t numOfSentChunks = 0;
 
-  if (!src_fetchers_context_[0].future.valid() || src_fetchers_context_[0].blockId != nextBlockId) {
+  if (!srcFetchersContext_[0].future.valid() || srcFetchersContext_[0].blockId != nextBlockId) {
     LOG_INFO(getLogger(),
-             "Source blocks prefetch disabled: first batch or retransmission: " << KVLOG(
-                 src_fetchers_context_[0].blockId, nextBlockId));
+             "Source blocks prefetch disabled: first batch or retransmission: " << KVLOG(srcFetchersContext_[0].blockId,
+                                                                                         nextBlockId));
     asyncSourceFetchBlocksConcurrent(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
   }
 
@@ -1404,19 +1410,19 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   size_t ctx_index = 0;
   char *buffer;
   do {
-    // LOG_DEBUG(getLogger(), "xxx wait for j=" << j);
-    auto &ctx = src_fetchers_context_[ctx_index];
+    // wait for worker to finish getting next block
+    auto &ctx = srcFetchersContext_[ctx_index];
     ctx.future.get();
     ConcordAssertEQ(ctx.blockId, nextBlockId);
-    histograms_.src_get_block_size_bytes->record(ctx.size);
-    histograms_.src_get_block_duration->record(ctx.fetch_block_duration_microsec);
     sizeOfNextBlock = ctx.size;
     buffer = ctx.buffer;
+    LOG_DEBUG(getLogger(), "Start sending next block: " << KVLOG(nextBlockId, sizeOfNextBlock));
 
-    LOG_DEBUG(getLogger(), "Start sending next block: " << KVLOG(nextBlockId));
-
-    batch_size_bytes += sizeOfNextBlock;
-    ++batch_size_blocks;
+    // some statistics
+    histograms_.src_get_block_size_bytes->record(ctx.size);
+    histograms_.src_get_block_duration->record(ctx.fetchBlockDurationMicrosec);
+    batchSizeBytes += sizeOfNextBlock;
+    ++batchSizeBlocks;
 
     sizeOfLastChunk = config_.maxChunkSize;
     numOfChunksInNextBlock = sizeOfNextBlock / config_.maxChunkSize;
@@ -1489,8 +1495,8 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
     }
   } while (true);
 
-  histograms_.src_send_batch_size_bytes->record(batch_size_bytes);
-  histograms_.src_send_batch_size_blocks->record(batch_size_blocks);
+  histograms_.src_send_batch_size_bytes->record(batchSizeBytes);
+  histograms_.src_send_batch_size_blocks->record(batchSizeBlocks);
   src_send_batch_duration_rec_.end();
 
   if (preFetchBlockId > 0) {
@@ -2259,8 +2265,10 @@ void BCStateTran::processData() {
         return;
       }
       sourceSelector_.updateSource(currTime);
-      LOG_DEBUG(getLogger(), "Selected new source replica: " << (sourceSelector_.currentReplica()));
-      metrics_.current_source_replica_.Get().Set(sourceSelector_.currentReplica());
+      auto currentSource = sourceSelector_.currentReplica();
+      LOG_DEBUG(getLogger(), "Selected new source replica: " << currentSource);
+      sources_.push_back(currentSource);
+      metrics_.current_source_replica_.Get().Set(currentSource);
       metrics_.preferred_replicas_.Get().Set(sourceSelector_.preferredReplicasToString());
       badDataFromCurrentSourceReplica = false;
       clearAllPendingItemsData();
@@ -2402,7 +2410,7 @@ void BCStateTran::processData() {
                    "skip logging snapshots, cycle is very short (not enough statistics)" << KVLOG(duration));
 
         LOG_DEBUG(getLogger(), "Moved to GettingMissingResPages");
-        GettingMissingResPagesDT_.start();
+        gettingMissingResPagesDT_.start();
         sendFetchResPagesMsg(0);
         break;
       }
@@ -2457,17 +2465,21 @@ void BCStateTran::processData() {
 
       // Completion
       auto blocksCollectedResults = blocks_collected_.getOverallResults();
+      std::ostringstream oss;
+      std::copy(sources_.begin(), sources_.end() - 1, std::ostream_iterator<uint16_t>(oss, ","));
+      oss << sources_.back();
       LOG_INFO(getLogger(),
-               "State Transfer cycle #"
-                   << cycleCounter_ << " ended, Total Duration: " << cycleDT_.calcDuration()
+               "State Transfer cycle ended (#"
+                   << cycleCounter_ << ") , Total Duration: " << cycleDT_.calcDuration()
                    << " ms, Time to get checkpoint summaries: " << gettingCheckpointSummariesDT_.duration()
                    << " ms, Time to fetch missing blocks: " << gettingMissingBlocksDT_.duration()
                    << " ms, Time to commit to chain: " << commitToChainDT_.duration()
-                   << " ms, Time to get reserved pages (vblock): " << GettingMissingResPagesDT_.calcDuration()
+                   << " ms, Time to get reserved pages (vblock): " << gettingMissingResPagesDT_.calcDuration()
                    << " ms, Collected blocks range [" << std::to_string(lastCollectedBlockId_.value()) << ", "
                    << std::to_string(firstCollectedBlockId_.value()) << "], Collected "
                    << std::to_string(blocksCollectedResults.num_processed_items_) + " blocks and " +
-                          std::to_string(bytes_collected_.getOverallResults().num_processed_items_) + " bytes");
+                          std::to_string(bytes_collected_.getOverallResults().num_processed_items_) + " bytes"
+                   << " #" << sources_.size() << " sources (first to last): [" << oss.str() << "]");
       LOG_INFO(getLogger(),
                "Invoking onTransferringComplete callbacks for checkpoint number: " << KVLOG(cp.checkpointNum));
       metrics_.on_transferring_complete_.Get().Inc();
