@@ -331,9 +331,11 @@ void BCStateTran::init(uint64_t maxNumOfRequiredStoredCheckpoints,
           SetAllReplicasAsPreferred();
         if (fs == FetchingState::GettingCheckpointSummaries)
           gettingCheckpointSummariesDT_.start();
-        else if (fs == FetchingState::GettingMissingBlocks)
+        else if (fs == FetchingState::GettingMissingBlocks) {
           gettingMissingBlocksDT_.start();
-        else if (fs == FetchingState::GettingMissingResPages)
+          blocks_collected_.start();
+          bytes_collected_.start();
+        } else if (fs == FetchingState::GettingMissingResPages)
           gettingMissingResPagesDT_.start();
       }
 
@@ -699,7 +701,8 @@ void BCStateTran::onTimerImp() {
   auto currTime = getMonotonicTimeMilli();
 
   // take a snapshot and log after time passed is approx x2 of fetchRetransmissionTimeoutMs
-  if (sourceFlag_ && (((++sourceSnapshotCounter_) * config_.refreshTimerMs) >= (2 * config_.fetchRetransmissionTimeoutMs))) {
+  if (sourceFlag_ &&
+      (((++sourceSnapshotCounter_) * config_.refreshTimerMs) >= (2 * config_.fetchRetransmissionTimeoutMs))) {
     auto &registrar = concord::diagnostics::RegistrarSingleton::getInstance();
     registrar.perf.snapshot("state_transfer");
     registrar.perf.snapshot("state_transfer_src");
@@ -2479,8 +2482,12 @@ void BCStateTran::processData() {
       checkConsistency(config_.pedanticChecks);
 
       // Completion
-      auto blocksCollectedResults = blocks_collected_.getOverallResults();
-      auto bytesCollectedResults = bytes_collected_.getOverallResults();
+      Throughput::Results blocksCollectedResults{};
+      Throughput::Results bytesCollectedResults{};
+      if (gettingMissingBlocksDT_.durationMilli() != 0) {
+        blocksCollectedResults = blocks_collected_.getOverallResults();
+        bytesCollectedResults = bytes_collected_.getOverallResults();
+      }
       std::ostringstream oss;
       std::copy(sources_.begin(), sources_.end() - 1, std::ostream_iterator<uint16_t>(oss, ","));
       oss << sources_.back();

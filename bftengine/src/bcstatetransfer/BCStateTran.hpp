@@ -485,7 +485,10 @@ class BCStateTran : public IStateTransfer {
       return durationMillisec_;
     }
     void reset() { startTime_ = std::nullopt; }
-    void start() { startTime_ = std::chrono::steady_clock::now(); }
+    void start() {
+      ConcordAssertEQ(startTime_, std::nullopt);
+      startTime_ = std::chrono::steady_clock::now();
+    }
     uint64_t durationMilli() { return durationMillisec_; };
 
    private:
