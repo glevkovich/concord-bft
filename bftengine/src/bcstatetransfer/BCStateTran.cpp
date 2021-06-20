@@ -643,6 +643,7 @@ void BCStateTran::startCollectingStats() {
   commitToChainDT_.reset();
   gettingCheckpointSummariesDT_.reset();
   gettingMissingResPagesDT_.reset();
+  cycleDT_.reset();
   cycleDT_.start();
   sources_.clear();
 
