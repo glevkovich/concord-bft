@@ -1330,31 +1330,35 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   src_send_batch_duration_rec_.start();
 
   // compute information about next block and chunk
+  uint32_t sizeOfLastChunk, numOfChunksInNextBlock, sizeOfNextBlock;
   uint64_t nextBlockId = m->lastRequiredBlock;
-  uint32_t sizeOfNextBlock = 0;
-  uint32_t sizeOfLastChunk = config_.maxChunkSize;
-  uint32_t numOfChunksInNextBlock = sizeOfNextBlock / config_.maxChunkSize;
   uint16_t nextChunk = m->lastKnownChunkInLastRequiredBlock + 1;
-
-  getBlock(nextBlockId, buffer_, &sizeOfNextBlock);
-  batch_size_bytes += sizeOfNextBlock;
-  ++batch_size_blocks;
-
-  if (sizeOfNextBlock % config_.maxChunkSize != 0) {
-    sizeOfLastChunk = sizeOfNextBlock % config_.maxChunkSize;
-    numOfChunksInNextBlock++;
-  }
-
-  // if msg is invalid (lastKnownChunkInLastRequiredBlock+1 does not exist)
-  if (nextChunk > numOfChunksInNextBlock) {
-    LOG_WARN(getLogger(),
-             "Msg is invalid: illegal chunk number: " << KVLOG(replicaId, nextChunk, numOfChunksInNextBlock));
-    return false;
-  }
-
-  // send chunks
   uint16_t numOfSentChunks = 0;
-  while (true) {
+
+  // fetch blocks and send all chunks for the batch
+  LOG_DEBUG(getLogger(),
+            "Start sending batch: " << KVLOG(
+                m->msgSeqNum, m->firstRequiredBlock, m->lastRequiredBlock, m->lastKnownChunkInLastRequiredBlock));
+  do {
+    LOG_DEBUG(getLogger(), "Start sending next block: " << KVLOG(nextBlockId));
+    getBlock(nextBlockId, buffer_, &sizeOfNextBlock);
+    batch_size_bytes += sizeOfNextBlock;
+    ++batch_size_blocks;
+
+    sizeOfLastChunk = config_.maxChunkSize;
+    numOfChunksInNextBlock = sizeOfNextBlock / config_.maxChunkSize;
+    if ((sizeOfNextBlock % config_.maxChunkSize) != 0) {
+      sizeOfLastChunk = sizeOfNextBlock % config_.maxChunkSize;
+      numOfChunksInNextBlock++;
+    }
+
+    // if msg is invalid (lastKnownChunkInLastRequiredBlock+1 does not exist)
+    if ((numOfSentChunks == 0) && (nextChunk > numOfChunksInNextBlock)) {
+      LOG_WARN(getLogger(),
+               "Msg is invalid: illegal chunk number: " << KVLOG(replicaId, nextChunk, numOfChunksInNextBlock));
+      return false;
+    }
+
     SCOPED_MDC_SEQ_NUM(getSequenceNumber(replicaId, m->msgSeqNum, nextChunk, nextBlockId));
     uint32_t chunkSize = (nextChunk < numOfChunksInNextBlock) ? config_.maxChunkSize : sizeOfLastChunk;
 
@@ -1385,39 +1389,28 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
 
     ItemDataMsg::free(outMsg);
     numOfSentChunks++;
+    nextBlockId--;
 
     // if we've already sent enough chunks
     if (numOfSentChunks >= config_.maxNumberOfChunksInBatch) {
       LOG_DEBUG(getLogger(), "Sent enough chunks: " << KVLOG(numOfSentChunks));
       break;
-    }
-    // if we still have chunks in block
-    else if (static_cast<uint16_t>(nextChunk + 1) <= numOfChunksInNextBlock) {
+    } else if (static_cast<uint16_t>(nextChunk + 1) <= numOfChunksInNextBlock) {
+      // we still have chunks in block
       nextChunk++;
-    }
-    // we sent all relevant blocks
-    else if (nextBlockId - 1 < m->firstRequiredBlock) {
+    } else if (nextBlockId < m->firstRequiredBlock) {
       LOG_DEBUG(getLogger(), "Sent all relevant blocks: " << KVLOG(m->firstRequiredBlock));
       break;
     } else {
-      nextBlockId--;
-      LOG_DEBUG(getLogger(), "Start sending next block: " << KVLOG(nextBlockId));
-      getBlock(nextBlockId, buffer_, &sizeOfNextBlock);
-      batch_size_bytes += sizeOfNextBlock;
-      ++batch_size_blocks;
-
-      sizeOfLastChunk = config_.maxChunkSize;
-      numOfChunksInNextBlock = sizeOfNextBlock / config_.maxChunkSize;
-      if (sizeOfNextBlock % config_.maxChunkSize != 0) {
-        sizeOfLastChunk = sizeOfNextBlock % config_.maxChunkSize;
-        numOfChunksInNextBlock++;
-      }
+      // no more chunks in the block
       nextChunk = 1;
     }
-  }  // while
+  } while (true);
+
   histograms_.src_send_batch_size_bytes->record(batch_size_bytes);
   histograms_.src_send_batch_size_blocks->record(batch_size_blocks);
   src_send_batch_duration_rec_.end();
+
   return false;
 }
 
