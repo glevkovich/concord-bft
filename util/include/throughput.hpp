@@ -17,6 +17,7 @@
 #include <chrono>
 
 #include "assertUtils.hpp"
+#include "Logger.hpp"
 
 namespace concord::util {
 
@@ -33,22 +34,29 @@ class DurationTracker {
     ConcordAssert(!running_);
     startTime_ = std::chrono::steady_clock::now();
     running_ = true;
+    LOG_INFO(GL, "xxx " << name_ << " start" << KVLOG(running_));
   }
   uint64_t pause() {
+    LOG_INFO(GL, "xxx " << name_ << " pause" << KVLOG(running_, durationMillisec_));
     if (running_)
       durationMillisec_ += std::chrono::duration_cast<T>(std::chrono::steady_clock::now() - startTime_).count();
     running_ = false;
+    LOG_INFO(GL, "xxx " << name_ << " pause" << KVLOG(running_, durationMillisec_));
     return durationMillisec_;
   }
-  void reset() {
+  void reset(std::string&& name) {
     durationMillisec_ = 0;
     running_ = false;
+    name_ = std::move(name_);
+    LOG_INFO(GL, "xxx " << name_ << " reset");
   }
   uint64_t durationMilli() {
+    LOG_INFO(GL, "xxx " << name_ << " durationMilli" << KVLOG(running_, durationMillisec_));
     if (running_) {
       durationMillisec_ = pause();
       start();
     }
+    LOG_INFO(GL, "xxx " << name_ << " durationMilli" << KVLOG(running_, durationMillisec_));
     return durationMillisec_;
   };
 
@@ -56,6 +64,7 @@ class DurationTracker {
   uint64_t durationMillisec_ = 0;
   std::chrono::time_point<std::chrono::steady_clock> startTime_;
   bool running_ = false;
+  std::string name_;
 };
 
 /**
@@ -79,7 +88,8 @@ class DurationTracker {
  */
 class Throughput {
  public:
-  Throughput(uint32_t windowSize = 0ul) : numReportsPerWindow_(windowSize) {}
+  Throughput(std::string&& name, uint32_t windowSize = 0ul)
+      : numReportsPerWindow_(windowSize), name_(std::move(name)) {}
   Throughput() = delete;
 
   // Reset all statistics and record starting time
@@ -129,6 +139,7 @@ class Throughput {
   Stats previousWindowStats_;
   uint64_t previousWindowIndex_;
   uint64_t reportsCounter_ = 0;
+  std::string name_;
 };  // class Throughput
 
 }  // namespace concord::util
