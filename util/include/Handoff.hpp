@@ -78,10 +78,9 @@ class Handoff {
   func_type pop() {
     while (true) {
       std::unique_lock<std::mutex> ul(queue_lock_);
+      auto pred = [this] { return !task_queue_.empty() || stopped_; };
 
-      if (task_queue_.empty()) {
-        queue_cond_.wait(ul, [this] { return !(task_queue_.empty() && !stopped_); });
-      }
+      if (!pred()) queue_cond_.wait(ul, pred);
       task_queue_size_ = task_queue_.size();
 
       if (!stopped_ || (stopped_ && !task_queue_.empty())) {
@@ -89,6 +88,7 @@ class Handoff {
         task_queue_.pop();
         return f;
       }
+      LOG_INFO(getLogger(), "Handoff thread stopped!");
       throw ThreadCanceledException();
     }
   }
