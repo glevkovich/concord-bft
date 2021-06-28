@@ -2573,6 +2573,8 @@ void BCStateTran::cycleEndSummary() {
   if (gettingMissingBlocksDT_.durationMilli() != 0) {
     blocksCollectedResults = blocks_collected_.getOverallResults();
     bytesCollectedResults = bytes_collected_.getOverallResults();
+    blocks_collected_.pause();
+    bytes_collected_.pause();
   }
 
   std::copy(sources_.begin(), sources_.end() - 1, std::ostream_iterator<uint16_t>(oss, ","));
