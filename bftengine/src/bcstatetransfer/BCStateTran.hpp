@@ -471,7 +471,8 @@ class BCStateTran : public IStateTransfer {
   // used for logging
   std::optional<uint64_t> firstCollectedBlockId_;
   std::optional<uint64_t> lastCollectedBlockId_;
-  uint64_t commitToKvBcDurationMillisec_;
+  uint64_t commitToChainDurationMillisec_;
+  std::chrono::time_point<std::chrono::steady_clock> startCollectingStatsTime_;
 
   // used to print periodic summary of recent checkpoints, and collected date while in state GettingMissingBlocks
   std::string logsForCollectingStatus(const uint64_t firstRequiredBlock);
@@ -487,6 +488,7 @@ class BCStateTran : public IStateTransfer {
   static constexpr uint64_t MAX_BLOCK_SIZE = 100ULL * 1024ULL * 1024ULL;                 // 100MB
   static constexpr uint64_t MAX_BATCH_SIZE_BYTES = 10ULL * 1024ULL * 1024ULL * 1024ULL;  // 10GB
   static constexpr uint64_t MAX_BATCH_SIZE_BLOCKS = 1000ULL;
+  static constexpr uint64_t MAX_HANDOFF_QUEUE_SIZE = 10000ULL;
 
   struct Recorders {
     Recorders() {
@@ -497,6 +499,7 @@ class BCStateTran : public IStateTransfer {
                                            on_timer,
                                            handle_state_transfer_msg,
                                            time_in_handoff_queue,
+                                           handoff_queue_size,
                                            // destination
                                            dst_handle_ItemData_msg,
                                            dst_time_between_sendFetchBlocksMsg,
@@ -521,6 +524,7 @@ class BCStateTran : public IStateTransfer {
         handle_state_transfer_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
         time_in_handoff_queue, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handoff_queue_size, 1, MAX_HANDOFF_QUEUE_SIZE, 3, concord::diagnostics::Unit::COUNT);
     // destination
     DEFINE_SHARED_RECORDER(
         dst_handle_ItemData_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
