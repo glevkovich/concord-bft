@@ -34,7 +34,9 @@ class MsgType {
     FetchBlocks,
     FetchResPages,
     RejectFetching,
-    ItemData
+    ItemData,
+
+    MsgTypeLast  // keep last
   };
 };
 
