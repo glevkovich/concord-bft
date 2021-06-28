@@ -46,10 +46,12 @@ bool SourceSelector::isReset() const {
 }
 
 bool SourceSelector::retransmissionTimeoutExpired(uint64_t currTimeMilli) const {
+  // to declare restranmission expired we must have alrwady chosen a source and set fetchingTimeStamp_
+  if (currentReplica_ == NO_REPLICA) return false;
+  if (fetchingTimeStamp_ == 0) return false;
+  ConcordAssertGE(currTimeMilli, fetchingTimeStamp_);
   // TODO(GG): TBD - compute dynamically
-  uint64_t timeSinceSendMilli = ((currentReplica_ == NO_REPLICA) || (currTimeMilli < fetchingTimeStamp_))
-                                    ? 0
-                                    : (currTimeMilli - fetchingTimeStamp_);
+  uint64_t timeSinceSendMilli = (currTimeMilli - fetchingTimeStamp_);
   return timeSinceSendMilli > retransmissionTimeoutMilli_;
 }
 

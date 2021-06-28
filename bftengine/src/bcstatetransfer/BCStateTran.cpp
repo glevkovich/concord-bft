@@ -955,7 +955,14 @@ bool BCStateTran::checkValidityAndSaveMsgSeqNum(uint16_t replicaId, uint64_t msg
 
   if (diffMilli > config_.maxAcceptableMsgDelayMs) {
     auto excessiveMilliseconds = diffMilli - config_.maxAcceptableMsgDelayMs;
-    LOG_WARN(getLogger(), "Msg rejected because it is too old: " << KVLOG(replicaId, msgSeqNum, excessiveMilliseconds));
+    LOG_WARN(getLogger(),
+             "Msg rejected because it is too old: " << KVLOG(replicaId,
+                                                             msgSeqNum,
+                                                             excessiveMilliseconds,
+                                                             milliNow,
+                                                             diffMilli,
+                                                             milliMsgTime,
+                                                             config_.maxAcceptableMsgDelayMs));
     return false;
   }
 
@@ -1380,6 +1387,9 @@ uint16_t BCStateTran::asyncSourceFetchBlocksConcurrent(uint64_t nextBlockId,
 
   for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < startContextIndex + numBlocksToFetch); --i, ++j) {
     srcFetchersContext_[j].blockId = i;
+    if (srcFetchersContext_[j].future.valid())
+      // wait for previous job to end
+      srcFetchersContext_[j].future.get();
     srcFetchersContext_[j].future =
         workersPool_.async(std::bind(&BCStateTran::sourceGetBlock, this, _1), &srcFetchersContext_[j]);
   }
@@ -1462,6 +1472,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   do {
     // wait for worker to finish getting next block
     auto &ctx = srcFetchersContext_[ctx_index];
+    ConcordAssert(ctx.future.valid());
     ctx.future.get();
     ConcordAssertEQ(ctx.blockId, nextBlockId);
     sizeOfNextBlock = ctx.size;
