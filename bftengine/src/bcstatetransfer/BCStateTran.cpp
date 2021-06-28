@@ -239,7 +239,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       blocks_collected_(get_missing_blocks_summary_window_size),
       bytes_collected_(get_missing_blocks_summary_window_size),
       first_collected_block_num_({}),
-      src_block_fetchers_pool_(number_of_fetchers),
+      workers_pool_(config_.numberOfWorkerThreads),
       fetch_block_msg_latency_rec_(histograms_.fetch_blocks_msg_latency),
       src_send_batch_duration_rec_(histograms_.src_send_batch_duration),
       handoff_queue_idle_duration_rec_(histograms_.handoff_queue_idle_duration) {
@@ -1090,7 +1090,7 @@ void BCStateTran::sendFetchResPagesMsg(int16_t lastKnownChunkInLastRequiredBlock
 
 bool BCStateTran::onMessage(const AskForCheckpointSummariesMsg *m, uint32_t msgLen, uint16_t replicaId) {
   SCOPED_MDC_SEQ_NUM(getSequenceNumber(replicaId, m->msgSeqNum));
-  LOG_DEBUG(getLogger(), "");
+  LOG_DEBUG(getLogger(), KVLOG(replicaId, m->msgSeqNum));
 
   ConcordAssert(!psd_->getIsFetchingState());
 
@@ -1163,7 +1163,7 @@ bool BCStateTran::onMessage(const AskForCheckpointSummariesMsg *m, uint32_t msgL
 
 bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint16_t replicaId) {
   SCOPED_MDC_SEQ_NUM(getSequenceNumber(config_.myReplicaId, uniqueMsgSeqNum()));
-  LOG_DEBUG(getLogger(), "");
+  LOG_DEBUG(getLogger(), KVLOG(replicaId, m->checkpointNum, m->lastBlock, m->requestMsgSeqNum));
 
   FetchingState fs = getFetchingState();
   ConcordAssertEQ(fs, FetchingState::GettingCheckpointSummaries);
@@ -1302,14 +1302,16 @@ void BCStateTran::sourceGetBlock(block_fetcher_context *ctx) {
   ConcordAssertGT(ctx->size, 0);
 }
 
-uint16_t BCStateTran::asyncFetchBlocksConcurrent(uint64_t nextBlockId, uint64_t firstRequiredBlock, uint16_t numBlocks) {
-  static const auto getBlock_func = std::bind(&BCStateTran::sourceGetBlock, this, _1);
+uint16_t BCStateTran::asyncSourceFetchBlocksConcurrent(uint64_t nextBlockId,
+                                                       uint64_t firstRequiredBlock,
+                                                       uint16_t numBlocks) {
+  static const auto getBlockFunc = std::bind(&BCStateTran::sourceGetBlock, this, _1);
   auto blocksToFetch = std::min(config_.maxNumberOfChunksInBatch, numBlocks);
   uint16_t j = 0;
 
   for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < blocksToFetch); --i, ++j) {
     src_fetchers_context_[j].blockId = i;
-    src_fetchers_context_[j].future = src_block_fetchers_pool_.async(getBlock_func, &src_fetchers_context_[j]);
+    src_fetchers_context_[j].future = workers_pool_.async(getBlockFunc, &src_fetchers_context_[j]);
   }
 
   return j;
@@ -1317,7 +1319,10 @@ uint16_t BCStateTran::asyncFetchBlocksConcurrent(uint64_t nextBlockId, uint64_t 
 
 bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t replicaId) {
   SCOPED_MDC_SEQ_NUM(getSequenceNumber(replicaId, m->msgSeqNum));
-  LOG_DEBUG(getLogger(), "");
+  LOG_DEBUG(
+      getLogger(),
+      KVLOG(
+          replicaId, m->msgSeqNum, m->firstRequiredBlock, m->lastRequiredBlock, m->lastKnownChunkInLastRequiredBlock));
   metrics_.received_fetch_blocks_msg_.Get().Inc();
 
   // if msg is invalid
@@ -1367,9 +1372,10 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   uint16_t numOfSentChunks = 0;
 
   if (!src_fetchers_context_[0].future.valid() || src_fetchers_context_[0].blockId != nextBlockId) {
-    LOG_INFO(getLogger(), "Source blocks prefetch disabled: first batch or retransmission: " << 
-      KVLOG(src_fetchers_context_[0].blockId, nextBlockId));
-    asyncFetchBlocksConcurrent(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
+    LOG_INFO(getLogger(),
+             "Source blocks prefetch disabled: first batch or retransmission: " << KVLOG(
+                 src_fetchers_context_[0].blockId, nextBlockId));
+    asyncSourceFetchBlocksConcurrent(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
   }
 
   // fetch blocks and send all chunks for the batch
@@ -1466,14 +1472,16 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   // TODO - does it save much time to start calling this during loop?
   --nextBlockId;
   LOG_INFO(getLogger(), "Source blocks prefetch enabled: try prefetching next batch with " << KVLOG(nextBlockId));
-  asyncFetchBlocksConcurrent(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
+  asyncSourceFetchBlocksConcurrent(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
 
   return false;
 }
 
 bool BCStateTran::onMessage(const FetchResPagesMsg *m, uint32_t msgLen, uint16_t replicaId) {
   SCOPED_MDC_SEQ_NUM(getSequenceNumber(replicaId, m->msgSeqNum));
-  LOG_DEBUG(getLogger(), "");
+  LOG_DEBUG(
+      getLogger(),
+      KVLOG(replicaId, m->msgSeqNum, m->lastCheckpointKnownToRequester, m->requiredCheckpointNum, m->lastKnownChunk));
   metrics_.received_fetch_res_pages_msg_.Get().Inc();
 
   // if msg is invalid
@@ -1599,7 +1607,7 @@ bool BCStateTran::onMessage(const FetchResPagesMsg *m, uint32_t msgLen, uint16_t
 }
 
 bool BCStateTran::onMessage(const RejectFetchingMsg *m, uint32_t msgLen, uint16_t replicaId) {
-  LOG_DEBUG(getLogger(), "");
+  LOG_DEBUG(getLogger(), KVLOG(replicaId, m->requestMsgSeqNum));
   metrics_.received_reject_fetching_msg_.Get().Inc();
 
   FetchingState fs = getFetchingState();
@@ -1653,7 +1661,7 @@ bool BCStateTran::onMessage(const RejectFetchingMsg *m, uint32_t msgLen, uint16_
 // Retrieve either a chunk of a block or a reserved page when fetching
 bool BCStateTran::onMessage(const ItemDataMsg *m, uint32_t msgLen, uint16_t replicaId) {
   SCOPED_MDC_SEQ_NUM(getSequenceNumber(config_.myReplicaId, lastMsgSeqNum_, m->chunkNumber, m->blockNumber));
-  LOG_DEBUG(getLogger(), "");
+  LOG_DEBUG(getLogger(), KVLOG(replicaId, m->requestMsgSeqNum, m->blockNumber));
   metrics_.received_item_data_msg_.Get().Inc();
 
   FetchingState fs = getFetchingState();
@@ -2412,6 +2420,7 @@ void BCStateTran::processData() {
       LOG_INFO(getLogger(), registrar.perf.toString(registrar.perf.get("state_transfer")));
 
       // Completion
+      // TODO - numbers look wrong, check again.
       LOG_INFO(
           getLogger(),
           "State Transfer cycle #" << cycleCounter_ << " ended, Collected Range [" << std::to_string(firstRequiredBlock)

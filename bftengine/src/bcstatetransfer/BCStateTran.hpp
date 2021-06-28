@@ -455,7 +455,7 @@ class BCStateTran : public IStateTransfer {
   void startCollectingStats();
 
   ///////////////////////////////////////////////////////////////////////////
-  // worker threads and source
+  // worker threads
   ///////////////////////////////////////////////////////////////////////////
   struct block_fetcher_context {
     uint64_t fetch_block_duration_microsec;
@@ -464,14 +464,15 @@ class BCStateTran : public IStateTransfer {
     uint32_t size;
     std::future<void> future;
   };
-  constexpr static uint8_t number_of_fetchers = 64;  // todo - get from config file
-  concord::util::ThreadPool src_block_fetchers_pool_;
+
+  concord::util::ThreadPool workers_pool_;
   std::vector<block_fetcher_context> src_fetchers_context_;
 
   void sourceGetBlock(block_fetcher_context* ctx);
-  uint16_t asyncFetchBlocksConcurrent(uint64_t nextBlockId,
-                                      uint64_t firstRequiredBlock,
-                                      uint16_t numBlocks);  // returns number of jobs pushed to queue
+  // returns number of jobs pushed to queue
+  uint16_t asyncSourceFetchBlocksConcurrent(uint64_t nextBlockId,
+                                            uint64_t firstRequiredBlock,
+                                            uint16_t numBlocks);
 
  private:
   ///////////////////////////////////////////////////////////////////////////
