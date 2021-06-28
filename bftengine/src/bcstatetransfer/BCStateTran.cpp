@@ -253,7 +253,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
 
   src_fetchers_context_.resize(config_.maxNumberOfChunksInBatch);
   for (auto &context : src_fetchers_context_) {
-    context.buffer = new char[maxItemSize_];
+    context.buffer = new char[config_.maxBlockSize];
   }
   buffer_ = new char[maxItemSize_]{};
   LOG_INFO(getLogger(), "Creating BCStateTran object: " << config_);
@@ -2150,11 +2150,12 @@ std::string BCStateTran::logsForCollectingStatus(const uint64_t firstRequiredBlo
       "collectRange", std::to_string(firstRequiredBlock) + ", " + std::to_string(first_collected_block_num_.value())));
   nested_data.insert(toPair("lastCollectedBlock", nextRequiredBlock_));
   nested_data.insert(toPair("blocksLeft", (nextRequiredBlock_ - firstRequiredBlock)));
+  nested_data.insert(toPair("Cycle", cycleCounter_));
   nested_data.insert(toPair("elapsedTime", std::to_string(blocks_overall_r.elapsed_time_ms_) + " ms"));
   nested_data.insert(toPair("collected",
                             std::to_string(blocks_overall_r.num_processed_items_) + " blk & " +
                                 std::to_string(bytes_overall_r.num_processed_items_) + " B"));
-  nested_data.insert(toPair("thoughput",
+  nested_data.insert(toPair("throughput",
                             std::to_string(blocks_overall_r.throughput_) + " blk/s & " +
                                 std::to_string(bytes_overall_r.throughput_) + " B/s"));
   result.insert(
@@ -2172,7 +2173,7 @@ std::string BCStateTran::logsForCollectingStatus(const uint64_t firstRequiredBlo
                               std::to_string(blocks_win_r.num_processed_items_) + " blk & " +
                                   std::to_string(bytes_win_r.num_processed_items_) + " B"));
     nested_data.insert(toPair(
-        "thoughput",
+        "throughput",
         std::to_string(blocks_win_r.throughput_) + " blk/s & " + std::to_string(bytes_win_r.throughput_) + " B/s"));
     result.insert(
         toPair("lastWindow", concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
@@ -2310,9 +2311,17 @@ void BCStateTran::processData() {
 
       const uint64_t firstRequiredBlock = g.txn()->getFirstRequiredBlock();
       bool lastBlock = (firstRequiredBlock >= nextRequiredBlock_);
+      std::chrono::steady_clock::time_point commitToChainStartTime;
+      if (lastBlock) commitToChainStartTime = std::chrono::steady_clock::now();
       LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
-
       ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
+      if (lastBlock) {
+        LOG_DEBUG(
+            getLogger(),
+            "Commit to chain done! total duration: " << std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                            std::chrono::steady_clock::now() - commitToChainStartTime)
+                                                            .count());
+      }
 
       reportCollectingStatus(firstRequiredBlock, actualBlockSize);
       if (!lastBlock) {
@@ -2364,6 +2373,7 @@ void BCStateTran::processData() {
       DataStore::CheckpointDesc cp = g.txn()->getCheckpointBeingFetched();
 
       // set stored data
+      const uint64_t firstRequiredBlock = g.txn()->getFirstRequiredBlock();
       ConcordAssertEQ(g.txn()->getFirstRequiredBlock(), 0);
       ConcordAssertEQ(g.txn()->getLastRequiredBlock(), 0);
       ConcordAssertGT(cp.checkpointNum, g.txn()->getLastStoredCheckpoint());
@@ -2396,7 +2406,14 @@ void BCStateTran::processData() {
       LOG_INFO(getLogger(), registrar.perf.toString(registrar.perf.get("state_transfer")));
 
       // Completion
-      LOG_INFO(getLogger(), "State Transfer cycle #" << cycleCounter_ << " ended");
+      LOG_INFO(
+          getLogger(),
+          "State Transfer cycle #" << cycleCounter_ << " ended, Collected Range [" << std::to_string(firstRequiredBlock)
+                                   << ", " << std::to_string(first_collected_block_num_.value()) << "], "
+                                   << std::to_string(blocks_collected_.getOverallResults().num_processed_items_) +
+                                          " blocks and " +
+                                          std::to_string(bytes_collected_.getOverallResults().num_processed_items_) +
+                                          " Bytes");
       LOG_INFO(getLogger(),
                "Invoking onTransferringComplete callbacks for checkpoint number: " << KVLOG(cp.checkpointNum));
       metrics_.on_transferring_complete_.Get().Inc();
