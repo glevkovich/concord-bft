@@ -511,27 +511,25 @@ class BCStateTran : public IStateTransfer {
   struct Recorders {
     Recorders() {
       auto& registrar = concord::diagnostics::RegistrarSingleton::getInstance();
-      registrar.perf.registerComponent("state_transfer",
+      // common component
+      registrar.perf.registerComponent(
+          "state_transfer", {on_timer, handle_state_transfer_msg, time_in_handoff_queue, handoff_queue_size});
+      // destination component
+      registrar.perf.registerComponent("state_transfer_dest",
                                        {
-                                           // common
-                                           on_timer,
-                                           handle_state_transfer_msg,
-                                           time_in_handoff_queue,
-                                           handoff_queue_size,
-                                           // destination
                                            dst_handle_ItemData_msg,
                                            dst_time_between_sendFetchBlocksMsg,
                                            dst_put_block_duration,
                                            dst_digest_calc_duration,
-                                           // source
-                                           src_handle_FetchBlocks_msg,
-                                           src_get_block_duration,
-                                           src_get_block_size_bytes,
-                                           src_send_batch_duration,
-                                           src_send_batch_size_bytes,
-                                           src_send_batch_size_blocks,
-                                           src_calc_next_required_block_duration,
                                        });
+      // source component
+      registrar.perf.registerComponent("state_transfer_src",
+                                       {src_handle_FetchBlocks_msg,
+                                        src_get_block_duration,
+                                        src_get_block_size_bytes,
+                                        src_send_batch_duration,
+                                        src_send_batch_size_bytes,
+                                        src_send_batch_size_blocks});
     }
     //////////////////////////////////////////////////////////
     // Shared Recorders - match the above registered recorders
@@ -562,8 +560,6 @@ class BCStateTran : public IStateTransfer {
         src_send_batch_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(src_send_batch_size_bytes, 1, MAX_BATCH_SIZE_BYTES, 3, concord::diagnostics::Unit::BYTES);
     DEFINE_SHARED_RECORDER(src_send_batch_size_blocks, 1, MAX_BATCH_SIZE_BLOCKS, 3, concord::diagnostics::Unit::COUNT);
-    DEFINE_SHARED_RECORDER(
-        src_calc_next_required_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
   };
   Recorders histograms_;
 

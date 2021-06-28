@@ -2272,7 +2272,6 @@ void BCStateTran::processData() {
     // if needed, determine the next required block
     //////////////////////////////////////////////////////////////////////////
     if (nextRequiredBlock_ == 0) {
-      TimeRecorder scoped_timer(*histograms_.src_calc_next_required_block_duration);
       ConcordAssert(digestOfNextRequiredBlock.isZero());
 
       DataStore::CheckpointDesc cp = psd_->getCheckpointBeingFetched();
@@ -2390,7 +2389,9 @@ void BCStateTran::processData() {
         // Log histograms for destination when GettingMissingBlocks is done
         auto &registrar = concord::diagnostics::RegistrarSingleton::getInstance();
         registrar.perf.snapshot("state_transfer");
+        registrar.perf.snapshot("state_transfer_dest");
         LOG_INFO(getLogger(), registrar.perf.toString(registrar.perf.get("state_transfer")));
+        LOG_INFO(getLogger(), registrar.perf.toString(registrar.perf.get("state_transfer_dest")));
 
         LOG_DEBUG(getLogger(), "Moved to GettingMissingResPages");
         GettingMissingResPagesDT_.start();
