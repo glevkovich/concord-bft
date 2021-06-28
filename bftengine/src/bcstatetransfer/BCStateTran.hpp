@@ -39,6 +39,7 @@
 #include "throughput.hpp"
 #include "diagnostics.h"
 #include "performance_handler.h"
+#include "thread_pool.hpp"
 
 using std::set;
 using std::map;
@@ -452,6 +453,14 @@ class BCStateTran : public IStateTransfer {
   std::string logsForCollectingStatus(const uint64_t firstRequiredBlock);
   void reportCollectingStatus(const uint64_t firstRequiredBlock, const uint32_t actualBlockSize);
   void startCollectingStats();
+
+ private:
+  ///////////////////////////////////////////////////////////////////////////
+  // worker threads
+  ///////////////////////////////////////////////////////////////////////////
+  constexpr static uint8_t number_of_fetchers = 16;  // todo - get from config file
+  concord::util::ThreadPool src_block_fetchers_;
+  std::vector<std::unique_ptr<ItemDataMsg>> src_workers_items_;
 
   ///////////////////////////////////////////////////////////////////////////
   // Latency Historgrams
