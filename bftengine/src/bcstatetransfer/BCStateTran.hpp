@@ -471,6 +471,7 @@ class BCStateTran : public IStateTransfer {
   // used for logging
   std::optional<uint64_t> firstCollectedBlockId_;
   std::optional<uint64_t> lastCollectedBlockId_;
+  uint64_t commitToKvBcDurationMillisec_;
 
   // used to print periodic summary of recent checkpoints, and collected date while in state GettingMissingBlocks
   std::string logsForCollectingStatus(const uint64_t firstRequiredBlock);
