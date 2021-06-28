@@ -251,7 +251,10 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
   // Register metrics component with the default aggregator.
   metrics_component_.Register();
 
-  for (auto &context : src_fetchers_context_) context.buffer = new char[maxItemSize_];
+  src_fetchers_context_.resize(config_.maxNumberOfChunksInBatch);
+  for (auto &context : src_fetchers_context_) {
+    context.buffer = new char[maxItemSize_];
+  }
   buffer_ = new char[maxItemSize_]{};
   LOG_INFO(getLogger(), "Creating BCStateTran object: " << config_);
 
@@ -274,7 +277,9 @@ BCStateTran::~BCStateTran() {
   ConcordAssert(pendingItemDataMsgs.empty());
 
   delete[] buffer_;
-  for (auto &context : src_fetchers_context_) delete[] context.buffer;
+  for (auto &context : src_fetchers_context_) {
+    delete[] context.buffer;
+  }
 }
 
 // Load metrics that are saved on persistent storage
@@ -1284,16 +1289,17 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
   return true;
 }
 
-void BCStateTran::getBlock(uint64_t blockId, char *outBlock, uint32_t *outBlockSize) {
+void BCStateTran::sourceGetBlock(block_fetcher_context *ctx) {
   bool tmp;
-  *outBlockSize = 0;
+  ctx->size = 0;
   {
-    TimeRecorder<true> scoped_timer(*histograms_.src_get_block_duration);
-    tmp = as_->getBlock(blockId, outBlock, outBlockSize);
+    auto start = std::chrono::steady_clock::now();
+    tmp = as_->getBlock(ctx->blockId, ctx->buffer, &ctx->size);
+    auto end = std::chrono::steady_clock::now();
+    ctx->fetch_block_duration_microsec = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
   }
   ConcordAssert(tmp);
-  ConcordAssertGT(*outBlockSize, 0);
-  histograms_.src_get_block_size_bytes->recordAtomic(*outBlockSize);
+  ConcordAssertGT(ctx->size, 0);
 }
 
 bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t replicaId) {
@@ -1347,7 +1353,8 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   uint16_t nextChunk = m->lastKnownChunkInLastRequiredBlock + 1;
   uint16_t numOfSentChunks = 0;
 
-  auto getBlock_func = std::bind(&BCStateTran::getBlock, this, _1, _2, _3);
+  // push enough work to be done by workers
+  auto getBlock_func = std::bind(&BCStateTran::sourceGetBlock, this, _1);
   // LOG_DEBUG(
   //     getLogger(),
   //     "xxx before calling to pool..." << KVLOG(m->firstRequiredBlock, nextBlockId,
@@ -1358,10 +1365,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
     //     getLogger(),
     //     "xxx 1 " << KVLOG(j, (uintptr_t)src_fetchers_context_[j].buffer, (uintptr_t)&src_fetchers_context_[j].size));
     src_fetchers_context_[j].blockId = i;
-    src_fetchers_context_[j].future = src_block_fetchers_pool_.async(getBlock_func,
-                                                                     std::ref(src_fetchers_context_[j].blockId),
-                                                                     std::ref(src_fetchers_context_[j].buffer),
-                                                                     &src_fetchers_context_[j].size);
+    src_fetchers_context_[j].future = src_block_fetchers_pool_.async(getBlock_func, &src_fetchers_context_[j]);
     // LOG_DEBUG(getLogger(), "xxx done iteration " << KVLOG(i, j));
     // src_fetchers_context_[j].future.get();
   }
@@ -1374,9 +1378,12 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   size_t j = 0;
   do {
     // LOG_DEBUG(getLogger(), "xxx wait for j=" << j);
-    src_fetchers_context_[j].future.get();
-    sizeOfNextBlock = src_fetchers_context_[j].size;
-    buffer_ = src_fetchers_context_[j].buffer;
+    auto &ctx = src_fetchers_context_[j];
+    ctx.future.get();
+    histograms_.src_get_block_size_bytes->record(ctx.size);
+    histograms_.src_get_block_duration->record(ctx.fetch_block_duration_microsec);
+    sizeOfNextBlock = ctx.size;
+    buffer_ = ctx.buffer;
     // LOG_DEBUG(getLogger(), "xxx done wait for " << KVLOG(j, (uintptr_t)buffer_, sizeOfNextBlock));
     // LOG_DEBUG(getLogger(), "xxx buffer_:" << ::toString(buffer_, sizeOfNextBlock));
 
