@@ -465,8 +465,6 @@ bool Replica::getBlock(uint64_t blockId, char *outBlock, uint32_t *outBlockSize)
   *outBlockSize = ser.size();
   LOG_DEBUG(logger, KVLOG(blockId, *outBlockSize));
   std::memcpy(outBlock, ser.data(), *outBlockSize);
-  // LOG_DEBUG(logger, "xxx " << KVLOG(blockId, (uintptr_t)outBlock, (uintptr_t)outBlockSize));
-  // LOG_DEBUG(logger, "xxx rawBlock:" << toString(outBlock, *outBlockSize));
   return true;
 }
 
