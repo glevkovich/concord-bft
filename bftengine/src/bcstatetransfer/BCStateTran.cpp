@@ -330,10 +330,10 @@ void BCStateTran::init(uint64_t maxNumOfRequiredStoredCheckpoints,
         startCollectingStats();
         if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages)
           SetAllReplicasAsPreferred();
-        else if (fs == FetchingState::GettingMissingBlocks) {
-          blocks_collected_.start();
-          bytes_collected_.start();
-        }
+        // else if (fs == FetchingState::GettingMissingBlocks) {
+        //   blocks_collected_.start();
+        //   bytes_collected_.start();
+        // }
       }
       loadMetrics();
     } else {
@@ -1004,7 +1004,7 @@ std::ostream &operator<<(std::ostream &os, const BCStateTran::FetchingState fs) 
 
 bool BCStateTran::isFetching() const { return (psd_->getIsFetchingState()); }
 
-void BCStateTran::modifyDurationTrackers(FetchingState newFetchingState) {
+void BCStateTran::onFetchingStateChange(FetchingState newFetchingState) {
   LOG_DEBUG(getLogger(),
             "FetchingState changed from " << stateName(lastFetchingState_) << " to " << stateName(newFetchingState));
   switch (lastFetchingState_) {
@@ -1016,6 +1016,8 @@ void BCStateTran::modifyDurationTrackers(FetchingState newFetchingState) {
       break;
     case FetchingState::GettingMissingBlocks:
       gettingMissingBlocksDT_.pause();
+      blocks_collected_.pause();
+      bytes_collected_.pause();
       break;
     case FetchingState::GettingMissingResPages:
       gettingMissingResPagesDT_.pause();
@@ -1029,6 +1031,13 @@ void BCStateTran::modifyDurationTrackers(FetchingState newFetchingState) {
       gettingCheckpointSummariesDT_.start();
       break;
     case FetchingState::GettingMissingBlocks:
+      if (blocks_collected_.isStarted()) {
+        blocks_collected_.resume();
+        bytes_collected_.resume();
+      } else {
+        blocks_collected_.start();
+        bytes_collected_.start();
+      }
       gettingMissingBlocksDT_.start();
       break;
     case FetchingState::GettingMissingResPages:
@@ -1053,7 +1062,7 @@ BCStateTran::FetchingState BCStateTran::getFetchingState() {
       fs = FetchingState::GettingMissingResPages;
     }
   }
-  if (lastFetchingState_ != fs) modifyDurationTrackers(fs);
+  if (lastFetchingState_ != fs) onFetchingStateChange(fs);
   return fs;
 }
 
@@ -1336,8 +1345,6 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
 
     if (newCheckpoint.lastBlock > lastReachableBlockNum) {
       // fetch blocks
-      blocks_collected_.start();
-      bytes_collected_.start();
       g.txn()->setFirstRequiredBlock(lastReachableBlockNum + 1);
       g.txn()->setLastRequiredBlock(newCheckpoint.lastBlock);
     } else {
@@ -2223,9 +2230,9 @@ void BCStateTran::reportCollectingStatus(const uint64_t firstRequiredBlock,
     metrics_.overall_blocks_throughput_.Get().Set(overall_block_results.throughput_);
     metrics_.overall_bytes_throughput_.Get().Set(overall_bytes_results.throughput_);
 
-    metrics_.prev_win_blocks_collected_.Get().Set(prev_win_block_results.num_processed_items_);
+    metrics_.prev_win_blocks_collected_.Get().Set(prev_win_block_results.numProcessedItems_);
     metrics_.prev_win_blocks_throughput_.Get().Set(prev_win_block_results.throughput_);
-    metrics_.prev_win_bytes_collected_.Get().Set(prev_win_bytes_results.num_processed_items_);
+    metrics_.prev_win_bytes_collected_.Get().Set(prev_win_bytes_results.numProcessedItems_);
     metrics_.prev_win_bytes_throughput_.Get().Set(prev_win_bytes_results.throughput_);
 
     LOG_INFO(getLogger(), logsForCollectingStatus(firstRequiredBlock));
@@ -2244,10 +2251,10 @@ std::string BCStateTran::logsForCollectingStatus(const uint64_t firstRequiredBlo
   nested_data.insert(toPair("lastCollectedBlock", nextRequiredBlock_));
   nested_data.insert(toPair("blocksLeft", (nextRequiredBlock_ - firstRequiredBlock)));
   nested_data.insert(toPair("cycle", cycleCounter_));
-  nested_data.insert(toPair("elapsedTime", std::to_string(blocks_overall_r.elapsed_time_ms_) + " ms"));
+  nested_data.insert(toPair("elapsedTime", std::to_string(blocks_overall_r.elapsedTimeMillisec_) + " ms"));
   nested_data.insert(toPair("collected",
-                            std::to_string(blocks_overall_r.num_processed_items_) + " blk & " +
-                                std::to_string(bytes_overall_r.num_processed_items_) + " B"));
+                            std::to_string(blocks_overall_r.numProcessedItems_) + " blk & " +
+                                std::to_string(bytes_overall_r.numProcessedItems_) + " B"));
   nested_data.insert(toPair("throughput",
                             std::to_string(blocks_overall_r.throughput_) + " blk/s & " +
                                 std::to_string(bytes_overall_r.throughput_) + " B/s"));
@@ -2261,10 +2268,10 @@ std::string BCStateTran::logsForCollectingStatus(const uint64_t firstRequiredBlo
     auto prev_win_index = blocks_collected_.getPrevWinIndex();
 
     nested_data.insert(toPair("index", prev_win_index));
-    nested_data.insert(toPair("elapsedTime", std::to_string(blocks_win_r.elapsed_time_ms_) + " ms"));
+    nested_data.insert(toPair("elapsedTime", std::to_string(blocks_win_r.elapsedTimeMillisec_) + " ms"));
     nested_data.insert(toPair("collected",
-                              std::to_string(blocks_win_r.num_processed_items_) + " blk & " +
-                                  std::to_string(bytes_win_r.num_processed_items_) + " B"));
+                              std::to_string(blocks_win_r.numProcessedItems_) + " blk & " +
+                                  std::to_string(bytes_win_r.numProcessedItems_) + " B"));
     nested_data.insert(toPair(
         "throughput",
         std::to_string(blocks_win_r.throughput_) + " blk/s & " + std::to_string(bytes_win_r.throughput_) + " B/s"));
@@ -2521,33 +2528,7 @@ void BCStateTran::processData() {
       g.txn()->setIsFetchingState(false);
       ConcordAssertEQ(getFetchingState(), FetchingState::NotFetching);
 
-      Throughput::Results blocksCollectedResults{};
-      Throughput::Results bytesCollectedResults{};
-      if (gettingMissingBlocksDT_.durationMilli() != 0) {
-        blocksCollectedResults = blocks_collected_.getOverallResults();
-        bytesCollectedResults = bytes_collected_.getOverallResults();
-      }
-      std::ostringstream oss;
-      std::copy(sources_.begin(), sources_.end() - 1, std::ostream_iterator<uint16_t>(oss, ","));
-      oss << sources_.back();
-      auto cycleDuration = cycleDT_.durationMilli();
-      LOG_INFO(getLogger(),
-               "State Transfer cycle ended (#"
-                   << cycleCounter_ << ") , Total Duration: " << cycleDuration
-                   << " ms, Time to get checkpoint summaries: " << gettingCheckpointSummariesDT_.durationMilli()
-                   << " ms, Time to fetch missing blocks: " << gettingMissingBlocksDT_.durationMilli()
-                   << " ms, Time to commit to chain: " << commitToChainDT_.durationMilli()
-                   << " ms, Time to get reserved pages (vblock): " << gettingMissingResPagesDT_.durationMilli()
-                   << " ms, Collected blocks range [" << std::to_string(lastCollectedBlockId_.value()) << ", "
-                   << std::to_string(firstCollectedBlockId_.value()) << "], Collected "
-                   << std::to_string(blocksCollectedResults.num_processed_items_) + " blocks and " +
-                          std::to_string(bytesCollectedResults.num_processed_items_) + " bytes,"
-                   << " Throughput {GettingMissingBlocks}: " << blocksCollectedResults.throughput_ << " blocks/sec and "
-                   << bytesCollectedResults.throughput_ << " bytes/sec, Throughput {cycle}: "
-                   << static_cast<uint64_t>((1000 * blocksCollectedResults.num_processed_items_) / cycleDuration)
-                   << " blocks/sec and "
-                   << static_cast<uint64_t>((1000 * bytesCollectedResults.num_processed_items_) / cycleDuration)
-                   << " bytes/sec, #" << sources_.size() << " sources (first to last): [" << oss.str() << "]");
+      cycleEndSummary();
       lastFetchingState_ = FetchingState::NotFetching;
       break;
     }
@@ -2568,6 +2549,38 @@ void BCStateTran::processData() {
       break;
     }
   }
+}
+
+void BCStateTran::cycleEndSummary() {
+  Throughput::Results blocksCollectedResults;
+  Throughput::Results bytesCollectedResults;
+  std::ostringstream oss;
+
+  if (gettingMissingBlocksDT_.durationMilli() != 0) {
+    blocksCollectedResults = blocks_collected_.getOverallResults();
+    bytesCollectedResults = bytes_collected_.getOverallResults();
+  }
+
+  std::copy(sources_.begin(), sources_.end() - 1, std::ostream_iterator<uint16_t>(oss, ","));
+  oss << sources_.back();
+  auto cycleDuration = cycleDT_.durationMilli();
+  LOG_INFO(getLogger(),
+           "State Transfer cycle ended (#"
+               << cycleCounter_ << ") , Total Duration: " << cycleDuration
+               << " ms, Time to get checkpoint summaries: " << gettingCheckpointSummariesDT_.durationMilli()
+               << " ms, Time to fetch missing blocks: " << gettingMissingBlocksDT_.durationMilli()
+               << " ms, Time to commit to chain: " << commitToChainDT_.durationMilli()
+               << " ms, Time to get reserved pages (vblock): " << gettingMissingResPagesDT_.durationMilli()
+               << " ms, Collected blocks range [" << std::to_string(lastCollectedBlockId_.value()) << ", "
+               << std::to_string(firstCollectedBlockId_.value()) << "], Collected "
+               << std::to_string(blocksCollectedResults.numProcessedItems_) + " blocks and " +
+                      std::to_string(bytesCollectedResults.numProcessedItems_) + " bytes,"
+               << " Throughput {GettingMissingBlocks}: " << blocksCollectedResults.throughput_ << " blocks/sec and "
+               << bytesCollectedResults.throughput_ << " bytes/sec, Throughput {cycle}: "
+               << static_cast<uint64_t>((1000 * blocksCollectedResults.numProcessedItems_) / cycleDuration)
+               << " blocks/sec and "
+               << static_cast<uint64_t>((1000 * bytesCollectedResults.numProcessedItems_) / cycleDuration)
+               << " bytes/sec, #" << sources_.size() << " sources (first to last): [" << oss.str() << "]");
 }
 
 //////////////////////////////////////////////////////////////////////////////

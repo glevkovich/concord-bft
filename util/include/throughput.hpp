@@ -19,43 +19,91 @@
 #include "assertUtils.hpp"
 
 namespace concord::util {
+
+/** A Duration Tracker allows to track multiple none-continues time intervals (durations by).
+ * This is done by calling start() / pause() multiple times.
+ * If the last call to the tracker was start(), call durationMilli() to get the sum of intervals, including current
+ * still mesured interval. If ladt call to teacker was pause(): you may get the sum of intervals from the returned
+ * valuem or call durationMilli() explicitly. To reset (re-use) the tracker, call reset() and then start();
+ */
+template <typename T>
+class DurationTracker {
+ public:
+  void start() {
+    ConcordAssert(!running_);
+    startTime_ = std::chrono::steady_clock::now();
+    running_ = true;
+  }
+  uint64_t pause() {
+    ConcordAssert(running_);
+    durationMillisec_ += std::chrono::duration_cast<T>(std::chrono::steady_clock::now() - startTime_).count();
+    running_ = false;
+    return durationMillisec_;
+  }
+  void reset() {
+    durationMillisec_ = 0;
+    running_ = false;
+  }
+  uint64_t durationMilli() {
+    if (running_) {
+      durationMillisec_ = pause();
+      start();
+    }
+    return durationMillisec_;
+  };
+
+ private:
+  uint64_t durationMillisec_;
+  std::chrono::time_point<std::chrono::steady_clock> startTime_;
+  bool running_ = false;
+};
+
 /**
  * A Throughput object is used to calculate the number of items processed in a time unit.
- * After construction, it must be started by calling start(). In order to get meaningful statistics, user should
+ * After construction, it must be started by calling start(). It can be paused by calling pause().
+ * While paused, reports cannot be made. To continue call resume().
+ * In order to get meaningful statistics, user should
  * report periodically to the object on the processing progress by calling report().
  *
- * If the user supplies a window_size > 0:
+ * If the user supplies a windowSize > 0:
  * 1) User may call all member functions prefixed with getPrevWin*.
  * 2) Last window throughput is calculated and saved.
  * 3) Overall and last window calculations are based on the window's end time.
  * 4) report() returns true when the window's end reached.
  *
  * To get overall and/or last window statistics, the user has 2 options:
- * 1) If window_size > 0, it should waits until report() returns true and then it may call getOverallResults()
+ * 1) If windowSize > 0, it should waits until report() returns true and then it may call getOverallResults()
  * and/or getPrevWinResults().
- * 2) If window_size is 0, user can call at any time for getOverallResults(). Calling report() to continue collecting
+ * 2) If windowSize is 0, user can call at any time for getOverallResults(). Calling report() to continue collecting
  * statistics is still possible after.
  */
 class Throughput {
  public:
-  Throughput(uint32_t window_size = 0ul) : num_reports_per_window_(window_size) {}
+  Throughput(uint32_t windowSize = 0ul) : numReportsPerWindow_(windowSize) {}
   Throughput() = delete;
 
   // Reset all statistics and record starting time
   void start();
+  bool isStarted() { return started_; }
+
+  // pause timer. reporting is not allowed.
+  void pause();
+
+  // continue timer after pause was called()
+  void resume();
 
   // Report amount of items processed since last report.
-  // If window_size > 0: returns true if reached the end of a summary window, and started a new window
-  // trigger_calc_throughput is true: manually trigger end of window
-  bool report(uint64_t items_processed = 1, bool trigger_calc_throughput = false);
+  // If windowSize > 0: returns true if reached the end of a summary window, and started a new window
+  // triggerCalcThroughput is true: manually trigger end of window
+  bool report(uint64_t itemsProcessed = 1, bool triggerCalcThroughput = false);
 
   struct Results {
-    uint64_t elapsed_time_ms_ = 0ull;
+    uint64_t elapsedTimeMillisec_ = 0ull;
     uint64_t throughput_ = 0ull;  // items per sec
-    uint64_t num_processed_items_ = 0ull;
+    uint64_t numProcessedItems_ = 0ull;
   };
 
-  // Get overall Results: total number of items processed, and throughput from time elapsed_time_ms_
+  // Get overall Results: total number of items processed, and throughput from time elapsedTimeMillisec_
   const Results& getOverallResults();
 
   // Get previous window's results. Can be called only if report() returned true.
@@ -65,24 +113,22 @@ class Throughput {
   uint64_t getPrevWinIndex() const;
 
  protected:
-  class Stats {
-    std::chrono::time_point<std::chrono::steady_clock> start_time_;
-
-   public:
+  struct Stats {
+    DurationTracker<std::chrono::milliseconds> durationDT_;
     Results results_;
 
     void reset();
     void calcThroughput();
   };
 
-  const uint32_t num_reports_per_window_;
+  const uint32_t numReportsPerWindow_;
   bool started_ = false;
-  bool prev_win_calculated_ = false;
-  Stats overall_stats_;
-  Stats current_window_stats_;
-  Stats previous_window_stats_;
-  uint64_t previous_window_index_;
-  uint64_t reports_counter_ = 0;
+  bool prevWinCalculated_ = false;
+  Stats overallStats_;
+  Stats currentWindowStats_;
+  Stats previousWindowStats_;
+  uint64_t previousWindowIndex_;
+  uint64_t reportsCounter_ = 0;
 };  // class Throughput
 
 }  // namespace concord::util

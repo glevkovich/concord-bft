@@ -52,6 +52,7 @@ using concordMetrics::AtomicCounterHandle;
 using concord::util::Throughput;
 using concord::diagnostics::Recorder;
 using concord::diagnostics::AsyncTimeRecorder;
+using concord::util::DurationTracker;
 
 namespace bftEngine::bcst::impl {
 
@@ -301,6 +302,7 @@ class BCStateTran : public IStateTransfer {
                                    uint32_t vblockSize) const;
 
   void processData();
+  void cycleEndSummary();
 
   void EnterGettingCheckpointSummariesState();
   set<uint16_t> allOtherReplicas();
@@ -472,38 +474,6 @@ class BCStateTran : public IStateTransfer {
   std::optional<uint64_t> lastCollectedBlockId_;
   std::vector<uint16_t> sources_;
 
-  // A Duration Tracker allows to track a none-continues time intervals durations by calling start() / pause() multiple
-  // times. durationMilli() may be called only after explicitly calling pause(). This explicit call may be skipped by
-  // getting the duration as a returned value from pause(). To reuse the tracker, call reset().
-  template <typename T>
-  class DurationTracker {
-   public:
-    void start() {
-      startTime_ = std::chrono::steady_clock::now();
-      isPaused_ = false;
-    }
-    uint64_t pause() {
-      ConcordAssert(!isPaused_);
-      durationMillisec_ += std::chrono::duration_cast<T>(std::chrono::steady_clock::now() - startTime_.value()).count();
-      isPaused_ = true;
-      return durationMillisec_;
-    }
-    void reset() {
-      startTime_ = std::nullopt;
-      durationMillisec_ = 0;
-      isPaused_ = false;
-    }
-    uint64_t durationMilli() {
-      ConcordAssert(isPaused_);
-      return durationMillisec_;
-    };
-
-   private:
-    uint64_t durationMillisec_;
-    std::optional<std::chrono::time_point<std::chrono::steady_clock>> startTime_;
-    bool isPaused_ = false;
-  };
-
   // Duration Trackers
   DurationTracker<std::chrono::milliseconds> cycleDT_;
   DurationTracker<std::chrono::milliseconds> commitToChainDT_;
@@ -512,7 +482,7 @@ class BCStateTran : public IStateTransfer {
   DurationTracker<std::chrono::milliseconds> gettingMissingResPagesDT_;
   FetchingState lastFetchingState_;
 
-  void modifyDurationTrackers(FetchingState newFetchingState);
+  void onFetchingStateChange(FetchingState newFetchingState);
 
   // used to print periodic summary of recent checkpoints, and collected date while in state GettingMissingBlocks
   std::string logsForCollectingStatus(const uint64_t firstRequiredBlock);
