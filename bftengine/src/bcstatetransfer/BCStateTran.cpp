@@ -1286,7 +1286,7 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
     clearInfoAboutGettingCheckpointSummary();
     lastMsgSeqNum_ = 0;
     metrics_.last_msg_seq_num_.Get().Set(0);
-    gettingCheckpointSummariesDT_.calcDuration();
+    gettingCheckpointSummariesDT_.pause();
 
     // check if we need to fetch blocks, or reserved pages
     const uint64_t lastReachableBlockNum = as_->getLastReachableBlockNum();
@@ -1701,6 +1701,7 @@ bool BCStateTran::onMessage(const RejectFetchingMsg *m, uint32_t msgLen, uint16_
     SetAllReplicasAsPreferred();
     processData();
   } else if (fs == FetchingState::GettingMissingResPages) {
+    gettingCheckpointSummariesDT_.pause();
     EnterGettingCheckpointSummariesState();
   } else {
     ConcordAssert(false);
@@ -2164,6 +2165,7 @@ void BCStateTran::EnterGettingCheckpointSummariesState() {
   ConcordAssert(sourceSelector_.noPreferredReplicas());
   sourceSelector_.reset();
   metrics_.current_source_replica_.Get().Set(sourceSelector_.currentReplica());
+  gettingCheckpointSummariesDT_.start();
 
   nextRequiredBlock_ = 0;
   digestOfNextRequiredBlock.makeZero();
@@ -2280,6 +2282,7 @@ void BCStateTran::processData() {
     if (newSourceReplica) {
       sourceSelector_.removeCurrentReplica();
       if (fs == FetchingState::GettingMissingResPages && sourceSelector_.noPreferredReplicas()) {
+        gettingMissingResPagesDT_.pause();
         EnterGettingCheckpointSummariesState();
         return;
       }
@@ -2382,7 +2385,7 @@ void BCStateTran::processData() {
       // getMissingBlocksSummaryWindowSize
       reportCollectingStatus(firstRequiredBlock, actualBlockSize, lastBlock);
       if (lastBlock) {
-        gettingMissingBlocksDT_.calcDuration();
+        gettingMissingBlocksDT_.pause();
         commitToChainDT_.start();
       }
       LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
@@ -2406,7 +2409,7 @@ void BCStateTran::processData() {
       } else {
         // this is the last block we need
         // report collecting status (without vblock) into log
-        commitToChainDT_.calcDuration();
+        commitToChainDT_.pause();
         g.txn()->setFirstRequiredBlock(0);
         g.txn()->setLastRequiredBlock(0);
         clearAllPendingItemsData();
@@ -2417,7 +2420,7 @@ void BCStateTran::processData() {
 
         // Log histograms for destination when GettingMissingBlocks is done
         // Do it for a cycle that lasted more than 10 seconds
-        auto duration = cycleDT_.calcDuration();
+        auto duration = cycleDT_.pause();
         if (duration > 10000) {
           auto &registrar = concord::diagnostics::RegistrarSingleton::getInstance();
           registrar.perf.snapshot("state_transfer");
@@ -2427,7 +2430,7 @@ void BCStateTran::processData() {
         } else
           LOG_INFO(getLogger(),
                    "skip logging snapshots, cycle is very short (not enough statistics)" << KVLOG(duration));
-
+        cycleDT_.start();
         LOG_DEBUG(getLogger(), "Moved to GettingMissingResPages");
         gettingMissingResPagesDT_.start();
         sendFetchResPagesMsg(0);
@@ -2495,11 +2498,11 @@ void BCStateTran::processData() {
       LOG_INFO(
           getLogger(),
           "State Transfer cycle ended (#"
-              << cycleCounter_ << ") , Total Duration: " << cycleDT_.calcDuration()
+              << cycleCounter_ << ") , Total Duration: " << cycleDT_.pause()
               << " ms, Time to get checkpoint summaries: " << gettingCheckpointSummariesDT_.durationMilli()
               << " ms, Time to fetch missing blocks: " << gettingMissingBlocksDT_.durationMilli()
               << " ms, Time to commit to chain: " << commitToChainDT_.durationMilli()
-              << " ms, Time to get reserved pages (vblock): " << gettingMissingResPagesDT_.calcDuration()
+              << " ms, Time to get reserved pages (vblock): " << gettingMissingResPagesDT_.pause()
               << " ms, Collected blocks range [" << std::to_string(lastCollectedBlockId_.value()) << ", "
               << std::to_string(firstCollectedBlockId_.value()) << "], Collected "
               << std::to_string(blocksCollectedResults.num_processed_items_) + " blocks and " +

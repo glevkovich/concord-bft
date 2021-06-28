@@ -472,26 +472,38 @@ class BCStateTran : public IStateTransfer {
   std::optional<uint64_t> lastCollectedBlockId_;
   std::vector<uint16_t> sources_;
 
-  // Duration Trackers
+  // A Duration Tracker allows to track a none-continues time intervals durations by calling start() / pause() multiple
+  // times. durationMilli() may be called only after explicitly calling pause(). This explicit call may be skipped by
+  // getting the duration as a returned value from pause(). To reuse the tracker, call reset().
   template <typename T>
   class DurationTracker {
    public:
-    uint64_t calcDuration() {
-      if (startTime_ != std::nullopt)
-        durationMillisec_ =
-            std::chrono::duration_cast<T>(std::chrono::steady_clock::now() - startTime_.value()).count();
-      else
-        durationMillisec_ = 0;
+    void start() {
+      startTime_ = std::chrono::steady_clock::now();
+      isPaused_ = false;
+    }
+    uint64_t pause() {
+      durationMillisec_ += std::chrono::duration_cast<T>(std::chrono::steady_clock::now() - startTime_.value()).count();
+      isPaused_ = true;
       return durationMillisec_;
     }
-    void reset() { startTime_ = std::nullopt; }
-    void start() { startTime_ = std::chrono::steady_clock::now(); }
-    uint64_t durationMilli() { return durationMillisec_; };
+    void reset() {
+      startTime_ = std::nullopt;
+      durationMillisec_ = 0;
+      isPaused_ = false;
+    }
+    uint64_t durationMilli() {
+      ConcordAssert(isPaused_);
+      return durationMillisec_;
+    };
 
    private:
     uint64_t durationMillisec_;
     std::optional<std::chrono::time_point<std::chrono::steady_clock>> startTime_;
+    bool isPaused_ = false;
   };
+
+  // Duration Trackers
   DurationTracker<std::chrono::milliseconds> cycleDT_;
   DurationTracker<std::chrono::milliseconds> commitToChainDT_;
   DurationTracker<std::chrono::milliseconds> gettingCheckpointSummariesDT_;
