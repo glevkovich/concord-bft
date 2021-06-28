@@ -330,10 +330,6 @@ void BCStateTran::init(uint64_t maxNumOfRequiredStoredCheckpoints,
         startCollectingStats();
         if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages)
           SetAllReplicasAsPreferred();
-        // else if (fs == FetchingState::GettingMissingBlocks) {
-        //   blocks_collected_.start();
-        //   bytes_collected_.start();
-        // }
       }
       loadMetrics();
     } else {
@@ -1016,8 +1012,6 @@ void BCStateTran::onFetchingStateChange(FetchingState newFetchingState) {
       break;
     case FetchingState::GettingMissingBlocks:
       gettingMissingBlocksDT_.pause();
-      blocks_collected_.pause();
-      bytes_collected_.pause();
       break;
     case FetchingState::GettingMissingResPages:
       gettingMissingResPagesDT_.pause();
@@ -1031,6 +1025,7 @@ void BCStateTran::onFetchingStateChange(FetchingState newFetchingState) {
       gettingCheckpointSummariesDT_.start();
       break;
     case FetchingState::GettingMissingBlocks:
+      gettingMissingBlocksDT_.start();
       if (blocks_collected_.isStarted()) {
         blocks_collected_.resume();
         bytes_collected_.resume();
@@ -1038,7 +1033,6 @@ void BCStateTran::onFetchingStateChange(FetchingState newFetchingState) {
         blocks_collected_.start();
         bytes_collected_.start();
       }
-      gettingMissingBlocksDT_.start();
       break;
     case FetchingState::GettingMissingResPages:
       gettingMissingResPagesDT_.start();
@@ -2420,7 +2414,11 @@ void BCStateTran::processData() {
       // to chain duration" and vblock. In that case last window might be less than tthe fixed
       // getMissingBlocksSummaryWindowSize
       reportCollectingStatus(firstRequiredBlock, actualBlockSize, lastBlock);
-      if (lastBlock) commitToChainDT_.start();
+      if (lastBlock) {
+        commitToChainDT_.start();
+        blocks_collected_.pause();
+        bytes_collected_.pause();
+      }
       LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
       {
         TimeRecorder scoped_timer(*histograms_.dst_put_block_duration);
