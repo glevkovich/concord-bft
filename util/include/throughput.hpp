@@ -35,8 +35,8 @@ class DurationTracker {
     running_ = true;
   }
   uint64_t pause() {
-    ConcordAssert(running_);
-    durationMillisec_ += std::chrono::duration_cast<T>(std::chrono::steady_clock::now() - startTime_).count();
+    if (running_)
+      durationMillisec_ += std::chrono::duration_cast<T>(std::chrono::steady_clock::now() - startTime_).count();
     running_ = false;
     return durationMillisec_;
   }
@@ -53,7 +53,7 @@ class DurationTracker {
   };
 
  private:
-  uint64_t durationMillisec_;
+  uint64_t durationMillisec_ = 0;
   std::chrono::time_point<std::chrono::steady_clock> startTime_;
   bool running_ = false;
 };

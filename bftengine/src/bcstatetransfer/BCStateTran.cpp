@@ -35,9 +35,6 @@
 #include "storage/key_manipulator_interface.h"
 #include "memorydb/client.h"
 
-// TODO(GG): for debugging - remove
-// #define DEBUG_SEND_CHECKPOINTS_IN_REVERSE_ORDER (1)
-
 #define STRPAIR(var) toPair(#var, var)
 
 using std::tie;
@@ -636,6 +633,9 @@ void BCStateTran::startCollectingStats() {
   gettingCheckpointSummariesDT_.reset();
   gettingMissingResPagesDT_.reset();
   cycleDT_.reset();
+  betweenPutBlocksStTempDT_.reset();
+  putBlocksStTempDT_.reset();
+
   sources_.clear();
 
   metrics_.overall_blocks_collected_.Get().Set(0ull);
@@ -1187,13 +1187,7 @@ bool BCStateTran::onMessage(const AskForCheckpointSummariesMsg *m, uint32_t msgL
 
   bool sent = false;
   auto toReplicaId = replicaId;
-
-#ifdef DEBUG_SEND_CHECKPOINTS_IN_REVERSE_ORDER
-  for (uint64_t i = fromCheckpoint; i <= toCheckpoint; i++)
-#else
-  for (uint64_t i = toCheckpoint; i >= fromCheckpoint; i--)
-#endif
-  {
+  for (uint64_t i = toCheckpoint; i >= fromCheckpoint; i--) {
     if (!psd_->hasCheckpointDesc(i)) continue;
 
     DataStore::CheckpointDesc c = psd_->getCheckpointDesc(i);
@@ -2418,13 +2412,17 @@ void BCStateTran::processData() {
         commitToChainDT_.start();
         blocks_collected_.pause();
         bytes_collected_.pause();
-      }
+      } else
+        putBlocksStTempDT_.start();
+      betweenPutBlocksStTempDT_.pause();
       LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
       {
         TimeRecorder scoped_timer(*histograms_.dst_put_block_duration);
         ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
       }
       if (!lastBlock) {
+        putBlocksStTempDT_.pause();
+        betweenPutBlocksStTempDT_.start();
         as_->getPrevDigestFromBlock(nextRequiredBlock_,
                                     reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
         nextRequiredBlock_--;
@@ -2564,12 +2562,15 @@ void BCStateTran::cycleEndSummary() {
   auto cycleDuration = cycleDT_.durationMilli();
   LOG_INFO(getLogger(),
            "State Transfer cycle ended (#"
-               << cycleCounter_ << ") , Total Duration: " << cycleDuration
-               << " ms, Time to get checkpoint summaries: " << gettingCheckpointSummariesDT_.durationMilli()
-               << " ms, Time to fetch missing blocks: " << gettingMissingBlocksDT_.durationMilli()
-               << " ms, Time to commit to chain: " << commitToChainDT_.durationMilli()
-               << " ms, Time to get reserved pages (vblock): " << gettingMissingResPagesDT_.durationMilli()
-               << " ms, Collected blocks range [" << std::to_string(lastCollectedBlockId_.value()) << ", "
+               << cycleCounter_ << ") , Total Duration: " << cycleDuration << "ms, "
+               << "Time to get checkpoint summaries: " << gettingCheckpointSummariesDT_.durationMilli() << "ms, "
+               << "Time to fetch missing blocks: " << gettingMissingBlocksDT_.durationMilli() << "ms, "
+               << "Time to commit to chain: " << commitToChainDT_.durationMilli() << "ms, "
+               << "Time to get reserved pages (vblock): " << gettingMissingResPagesDT_.durationMilli() << "ms, "
+               << "Total time between putblock (GettingMissingBlocks) " << betweenPutBlocksStTempDT_.durationMilli()
+               << "ms, "
+               << "Total time for putblock (GettingMissingBlocks) " << putBlocksStTempDT_.durationMilli() << "ms, "
+               << "Collected blocks range [" << std::to_string(lastCollectedBlockId_.value()) << ", "
                << std::to_string(firstCollectedBlockId_.value()) << "], Collected "
                << std::to_string(blocksCollectedResults.numProcessedItems_) + " blocks and " +
                       std::to_string(bytesCollectedResults.numProcessedItems_) + " bytes,"

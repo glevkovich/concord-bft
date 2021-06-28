@@ -480,6 +480,8 @@ class BCStateTran : public IStateTransfer {
   DurationTracker<std::chrono::milliseconds> gettingCheckpointSummariesDT_;
   DurationTracker<std::chrono::milliseconds> gettingMissingBlocksDT_;
   DurationTracker<std::chrono::milliseconds> gettingMissingResPagesDT_;
+  DurationTracker<std::chrono::milliseconds> betweenPutBlocksStTempDT_;
+  DurationTracker<std::chrono::milliseconds> putBlocksStTempDT_;
   FetchingState lastFetchingState_;
 
   void onFetchingStateChange(FetchingState newFetchingState);
