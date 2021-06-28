@@ -462,17 +462,35 @@ class BCStateTran : public IStateTransfer {
   std::map<uint64_t, concord::util::CallbackRegistry<uint64_t>> on_transferring_complete_cb_registry_;
 
   ///////////////////////////////////////////////////////////////////////////
-  // Internal Statistics
+  // Internal Statistics (debuging, logging)
   ///////////////////////////////////////////////////////////////////////////
  protected:
   static constexpr uint32_t getMissingBlocksSummaryWindowSize = (10 * checkpointWindowSize);
   Throughput blocks_collected_;
   Throughput bytes_collected_;
-  // used for logging
   std::optional<uint64_t> firstCollectedBlockId_;
   std::optional<uint64_t> lastCollectedBlockId_;
-  uint64_t commitToChainDurationMillisec_;
-  std::chrono::time_point<std::chrono::steady_clock> startCollectingStatsTime_;
+
+  // Duration Trakkers
+  template <typename T>
+  class DurationTracker {
+   public:
+    uint64_t calcDuration() {
+      durationMillisec_ = std::chrono::duration_cast<T>(std::chrono::steady_clock::now() - startTime_).count();
+      return durationMillisec_;
+    }
+    void start() { startTime_ = std::chrono::steady_clock::now(); }
+    uint64_t duration() { return durationMillisec_; };
+
+   private:
+    uint64_t durationMillisec_;
+    std::chrono::time_point<std::chrono::steady_clock> startTime_;
+  };
+  DurationTracker<std::chrono::milliseconds> cycleDT_;
+  DurationTracker<std::chrono::milliseconds> commitToChainDT_;
+  DurationTracker<std::chrono::milliseconds> gettingCheckpointSummariesDT_;
+  DurationTracker<std::chrono::milliseconds> gettingMissingBlocksDT_;
+  DurationTracker<std::chrono::milliseconds> GettingMissingResPagesDT_;
 
   // used to print periodic summary of recent checkpoints, and collected date while in state GettingMissingBlocks
   std::string logsForCollectingStatus(const uint64_t firstRequiredBlock);
