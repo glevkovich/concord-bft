@@ -2336,22 +2336,20 @@ void BCStateTran::processData() {
       ConcordAssertAND(lastChunkInRequiredBlock >= 1, actualBlockSize > 0);
       bool lastBlock = (firstRequiredBlock >= nextRequiredBlock_);
       std::chrono::steady_clock::time_point commitToChainStartTime;
-      if (lastBlock) {
-        // Summarize cycle block collection without including "commit to chain duration" and vblock
-        reportCollectingStatus(firstRequiredBlock, actualBlockSize, true);
-        commitToChainStartTime = std::chrono::steady_clock::now();
-      }
+
+      // Report collecting status for every block collected. Log entry is created every fixed window
+      // getMissingBlocksSummaryWindowSize If lastBlock is true: summarize the whole cycle without including "commit to
+      // chain duration" and vblock. In that case last window might be less than tthe fixed
+      // getMissingBlocksSummaryWindowSize
+      reportCollectingStatus(firstRequiredBlock, actualBlockSize, lastBlock);
+      if (lastBlock) commitToChainStartTime = std::chrono::steady_clock::now();
       LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
       {
         TimeRecorder scoped_timer(*histograms_.dst_put_block_duration);
         ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
+        // TODO(GL) remove the next log line
+        LOG_DEBUG(getLogger(), "Added block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
       }
-      if (lastBlock) {
-        commitToKvBcDurationMillisec_ = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                            std::chrono::steady_clock::now() - commitToChainStartTime)
-                                            .count();
-      } else
-        reportCollectingStatus(firstRequiredBlock, actualBlockSize);
       if (!lastBlock) {
         as_->getPrevDigestFromBlock(nextRequiredBlock_,
                                     reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
@@ -2366,8 +2364,11 @@ void BCStateTran::processData() {
           break;
         }
       } else {
-        // this is the last block we need
         // report collecting status (without vblock) into log
+        commitToKvBcDurationMillisec_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                            std::chrono::steady_clock::now() - commitToChainStartTime)
+                                            .count();
+        // this is the last block we need
         g.txn()->setFirstRequiredBlock(0);
         g.txn()->setLastRequiredBlock(0);
         clearAllPendingItemsData();
