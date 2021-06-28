@@ -185,7 +185,7 @@ class BCStateTran : public IStateTransfer {
 
   static string stateName(FetchingState fs);
 
-  FetchingState getFetchingState() const;
+  FetchingState getFetchingState();
   bool isFetching() const;
 
   inline std::string getSequenceNumber(uint16_t replicaId, uint64_t seqNum, uint16_t = 0, uint64_t = 0);
@@ -483,6 +483,7 @@ class BCStateTran : public IStateTransfer {
       isPaused_ = false;
     }
     uint64_t pause() {
+      ConcordAssert(!isPaused_);
       durationMillisec_ += std::chrono::duration_cast<T>(std::chrono::steady_clock::now() - startTime_.value()).count();
       isPaused_ = true;
       return durationMillisec_;
@@ -509,6 +510,9 @@ class BCStateTran : public IStateTransfer {
   DurationTracker<std::chrono::milliseconds> gettingCheckpointSummariesDT_;
   DurationTracker<std::chrono::milliseconds> gettingMissingBlocksDT_;
   DurationTracker<std::chrono::milliseconds> gettingMissingResPagesDT_;
+  FetchingState lastFetchingState_;
+
+  void modifyDurationTrackers(FetchingState newFetchingState);
 
   // used to print periodic summary of recent checkpoints, and collected date while in state GettingMissingBlocks
   std::string logsForCollectingStatus(const uint64_t firstRequiredBlock);

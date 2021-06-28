@@ -242,6 +242,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
                metrics_component_.RegisterGauge("prev_win_bytes_throughput", 0)},
       blocks_collected_(getMissingBlocksSummaryWindowSize),
       bytes_collected_(getMissingBlocksSummaryWindowSize),
+      lastFetchingState_(FetchingState::NotFetching),
       sourceFlag_(false),
       src_send_batch_duration_rec_(histograms_.src_send_batch_duration),
       dst_time_between_sendFetchBlocksMsg_rec_(histograms_.dst_time_between_sendFetchBlocksMsg),
@@ -329,16 +330,11 @@ void BCStateTran::init(uint64_t maxNumOfRequiredStoredCheckpoints,
         startCollectingStats();
         if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages)
           SetAllReplicasAsPreferred();
-        if (fs == FetchingState::GettingCheckpointSummaries)
-          gettingCheckpointSummariesDT_.start();
         else if (fs == FetchingState::GettingMissingBlocks) {
-          gettingMissingBlocksDT_.start();
           blocks_collected_.start();
           bytes_collected_.start();
-        } else if (fs == FetchingState::GettingMissingResPages)
-          gettingMissingResPagesDT_.start();
+        }
       }
-
       loadMetrics();
     } else {
       LOG_INFO(getLogger(), "Initializing a new object");
@@ -644,7 +640,6 @@ void BCStateTran::startCollectingStats() {
   gettingCheckpointSummariesDT_.reset();
   gettingMissingResPagesDT_.reset();
   cycleDT_.reset();
-  cycleDT_.start();
   sources_.clear();
 
   metrics_.overall_blocks_collected_.Get().Set(0ull);
@@ -670,7 +665,6 @@ void BCStateTran::startCollectingState() {
   registrar.perf.snapshot("state_transfer_dest");
   metrics_.start_collecting_state_.Get().Inc();
   startCollectingStats();
-  gettingCheckpointSummariesDT_.start();
 
   verifyEmptyInfoAboutGettingCheckpointSummary();
   {  // txn scope
@@ -1010,18 +1004,57 @@ std::ostream &operator<<(std::ostream &os, const BCStateTran::FetchingState fs) 
 
 bool BCStateTran::isFetching() const { return (psd_->getIsFetchingState()); }
 
-BCStateTran::FetchingState BCStateTran::getFetchingState() const {
-  if (!psd_->getIsFetchingState()) return FetchingState::NotFetching;
+void BCStateTran::modifyDurationTrackers(FetchingState newFetchingState) {
+  LOG_DEBUG(getLogger(),
+            "FetchingState changed from " << stateName(lastFetchingState_) << " to " << stateName(newFetchingState));
+  switch (lastFetchingState_) {
+    case FetchingState::NotFetching:
+      cycleDT_.start();
+      break;
+    case FetchingState::GettingCheckpointSummaries:
+      gettingCheckpointSummariesDT_.pause();
+      break;
+    case FetchingState::GettingMissingBlocks:
+      gettingMissingBlocksDT_.pause();
+      break;
+    case FetchingState::GettingMissingResPages:
+      gettingMissingResPagesDT_.pause();
+      break;
+  }
+  switch (newFetchingState) {
+    case FetchingState::NotFetching:
+      cycleDT_.pause();
+      break;
+    case FetchingState::GettingCheckpointSummaries:
+      gettingCheckpointSummariesDT_.start();
+      break;
+    case FetchingState::GettingMissingBlocks:
+      gettingMissingBlocksDT_.start();
+      break;
+    case FetchingState::GettingMissingResPages:
+      gettingMissingResPagesDT_.start();
+      break;
+  }
+  lastFetchingState_ = newFetchingState;
+}
 
-  ConcordAssertEQ(psd_->numOfAllPendingResPage(), 0);
-
-  if (!psd_->hasCheckpointBeingFetched()) return FetchingState::GettingCheckpointSummaries;
-
-  if (psd_->getLastRequiredBlock() > 0) return FetchingState::GettingMissingBlocks;
-
-  ConcordAssertEQ(psd_->getFirstRequiredBlock(), 0);
-
-  return FetchingState::GettingMissingResPages;
+BCStateTran::FetchingState BCStateTran::getFetchingState() {
+  BCStateTran::FetchingState fs;
+  if (!psd_->getIsFetchingState())
+    fs = FetchingState::NotFetching;
+  else {
+    ConcordAssertEQ(psd_->numOfAllPendingResPage(), 0);
+    if (!psd_->hasCheckpointBeingFetched())
+      fs = FetchingState::GettingCheckpointSummaries;
+    else if (psd_->getLastRequiredBlock() > 0)
+      fs = FetchingState::GettingMissingBlocks;
+    else {
+      ConcordAssertEQ(psd_->getFirstRequiredBlock(), 0);
+      fs = FetchingState::GettingMissingResPages;
+    }
+  }
+  if (lastFetchingState_ != fs) modifyDurationTrackers(fs);
+  return fs;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1056,6 +1089,7 @@ void BCStateTran::sendAskForCheckpointSummariesMsg() {
 void BCStateTran::sendFetchBlocksMsg(uint64_t firstRequiredBlock,
                                      uint64_t lastRequiredBlock,
                                      int16_t lastKnownChunkInLastRequiredBlock) {
+  ConcordAssertEQ(getFetchingState(), FetchingState::GettingMissingBlocks);
   ConcordAssert(sourceSelector_.hasSource());
   metrics_.sent_fetch_blocks_msg_.Get().Inc();
 
@@ -1083,6 +1117,7 @@ void BCStateTran::sendFetchBlocksMsg(uint64_t firstRequiredBlock,
 }
 
 void BCStateTran::sendFetchResPagesMsg(int16_t lastKnownChunkInLastRequiredBlock) {
+  ConcordAssertEQ(getFetchingState(), FetchingState::GettingMissingResPages);
   ConcordAssert(sourceSelector_.hasSource());
   ConcordAssert(psd_->hasCheckpointBeingFetched());
 
@@ -1286,7 +1321,6 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
     clearInfoAboutGettingCheckpointSummary();
     lastMsgSeqNum_ = 0;
     metrics_.last_msg_seq_num_.Get().Set(0);
-    gettingCheckpointSummariesDT_.pause();
 
     // check if we need to fetch blocks, or reserved pages
     const uint64_t lastReachableBlockNum = as_->getLastReachableBlockNum();
@@ -1302,14 +1336,12 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
 
     if (newCheckpoint.lastBlock > lastReachableBlockNum) {
       // fetch blocks
-      gettingMissingBlocksDT_.start();
       blocks_collected_.start();
       bytes_collected_.start();
       g.txn()->setFirstRequiredBlock(lastReachableBlockNum + 1);
       g.txn()->setLastRequiredBlock(newCheckpoint.lastBlock);
     } else {
       // fetch reserved pages (vblock)
-      gettingMissingResPagesDT_.start();
       ConcordAssertEQ(newCheckpoint.lastBlock, lastReachableBlockNum);
       ConcordAssertEQ(g.txn()->getFirstRequiredBlock(), 0);
       ConcordAssertEQ(g.txn()->getLastRequiredBlock(), 0);
@@ -1701,7 +1733,6 @@ bool BCStateTran::onMessage(const RejectFetchingMsg *m, uint32_t msgLen, uint16_
     SetAllReplicasAsPreferred();
     processData();
   } else if (fs == FetchingState::GettingMissingResPages) {
-    gettingCheckpointSummariesDT_.pause();
     EnterGettingCheckpointSummariesState();
   } else {
     ConcordAssert(false);
@@ -2165,7 +2196,6 @@ void BCStateTran::EnterGettingCheckpointSummariesState() {
   ConcordAssert(sourceSelector_.noPreferredReplicas());
   sourceSelector_.reset();
   metrics_.current_source_replica_.Get().Set(sourceSelector_.currentReplica());
-  gettingCheckpointSummariesDT_.start();
 
   nextRequiredBlock_ = 0;
   digestOfNextRequiredBlock.makeZero();
@@ -2282,7 +2312,6 @@ void BCStateTran::processData() {
     if (newSourceReplica) {
       sourceSelector_.removeCurrentReplica();
       if (fs == FetchingState::GettingMissingResPages && sourceSelector_.noPreferredReplicas()) {
-        gettingMissingResPagesDT_.pause();
         EnterGettingCheckpointSummariesState();
         return;
       }
@@ -2380,14 +2409,11 @@ void BCStateTran::processData() {
       bool lastBlock = (firstRequiredBlock >= nextRequiredBlock_);
 
       // Report collecting status for every block collected. Log entry is created every fixed window
-      // getMissingBlocksSummaryWindowSize If lastBlock is true: summarize the whole cycle without including "commit to
-      // chain duration" and vblock. In that case last window might be less than tthe fixed
+      // getMissingBlocksSummaryWindowSize If lastBlock is true: summarize the whole cycle without including "commit
+      // to chain duration" and vblock. In that case last window might be less than tthe fixed
       // getMissingBlocksSummaryWindowSize
       reportCollectingStatus(firstRequiredBlock, actualBlockSize, lastBlock);
-      if (lastBlock) {
-        gettingMissingBlocksDT_.pause();
-        commitToChainDT_.start();
-      }
+      if (lastBlock) commitToChainDT_.start();
       LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
       {
         TimeRecorder scoped_timer(*histograms_.dst_put_block_duration);
@@ -2432,7 +2458,6 @@ void BCStateTran::processData() {
                    "skip logging snapshots, cycle is very short (not enough statistics)" << KVLOG(duration));
         cycleDT_.start();
         LOG_DEBUG(getLogger(), "Moved to GettingMissingResPages");
-        gettingMissingResPagesDT_.start();
         sendFetchResPagesMsg(0);
         break;
       }
@@ -2486,6 +2511,16 @@ void BCStateTran::processData() {
       checkConsistency(config_.pedanticChecks);
 
       // Completion
+      LOG_INFO(getLogger(),
+               "Invoking onTransferringComplete callbacks for checkpoint number: " << KVLOG(cp.checkpointNum));
+      metrics_.on_transferring_complete_.Get().Inc();
+      std::set<uint64_t> cb_keys;
+      for (const auto &kv : on_transferring_complete_cb_registry_) {
+        kv.second.invokeAll(cp.checkpointNum);
+      }
+      g.txn()->setIsFetchingState(false);
+      ConcordAssertEQ(getFetchingState(), FetchingState::NotFetching);
+
       Throughput::Results blocksCollectedResults{};
       Throughput::Results bytesCollectedResults{};
       if (gettingMissingBlocksDT_.durationMilli() != 0) {
@@ -2495,32 +2530,25 @@ void BCStateTran::processData() {
       std::ostringstream oss;
       std::copy(sources_.begin(), sources_.end() - 1, std::ostream_iterator<uint16_t>(oss, ","));
       oss << sources_.back();
-      LOG_INFO(
-          getLogger(),
-          "State Transfer cycle ended (#"
-              << cycleCounter_ << ") , Total Duration: " << cycleDT_.pause()
-              << " ms, Time to get checkpoint summaries: " << gettingCheckpointSummariesDT_.durationMilli()
-              << " ms, Time to fetch missing blocks: " << gettingMissingBlocksDT_.durationMilli()
-              << " ms, Time to commit to chain: " << commitToChainDT_.durationMilli()
-              << " ms, Time to get reserved pages (vblock): " << gettingMissingResPagesDT_.pause()
-              << " ms, Collected blocks range [" << std::to_string(lastCollectedBlockId_.value()) << ", "
-              << std::to_string(firstCollectedBlockId_.value()) << "], Collected "
-              << std::to_string(blocksCollectedResults.num_processed_items_) + " blocks and " +
-                     std::to_string(bytesCollectedResults.num_processed_items_) + " bytes,"
-              << " Throughput (GettingMissingBlocks): " << blocksCollectedResults.throughput_ << " blocks/sec and "
-              << bytesCollectedResults.throughput_ << " bytes/sec, Throughput (cycle): "
-              << static_cast<uint64_t>((1000 * blocksCollectedResults.num_processed_items_) / cycleDT_.durationMilli())
-              << " blocks/sec and "
-              << static_cast<uint64_t>((1000 * bytesCollectedResults.num_processed_items_) / cycleDT_.durationMilli())
-              << " bytes/sec, #" << sources_.size() << " sources (first to last): [" << oss.str() << "]");
+      auto cycleDuration = cycleDT_.durationMilli();
       LOG_INFO(getLogger(),
-               "Invoking onTransferringComplete callbacks for checkpoint number: " << KVLOG(cp.checkpointNum));
-      metrics_.on_transferring_complete_.Get().Inc();
-      std::set<uint64_t> cb_keys;
-      for (const auto &kv : on_transferring_complete_cb_registry_) {
-        kv.second.invokeAll(cp.checkpointNum);
-      }
-      g.txn()->setIsFetchingState(false);
+               "State Transfer cycle ended (#"
+                   << cycleCounter_ << ") , Total Duration: " << cycleDuration
+                   << " ms, Time to get checkpoint summaries: " << gettingCheckpointSummariesDT_.durationMilli()
+                   << " ms, Time to fetch missing blocks: " << gettingMissingBlocksDT_.durationMilli()
+                   << " ms, Time to commit to chain: " << commitToChainDT_.durationMilli()
+                   << " ms, Time to get reserved pages (vblock): " << gettingMissingResPagesDT_.durationMilli()
+                   << " ms, Collected blocks range [" << std::to_string(lastCollectedBlockId_.value()) << ", "
+                   << std::to_string(firstCollectedBlockId_.value()) << "], Collected "
+                   << std::to_string(blocksCollectedResults.num_processed_items_) + " blocks and " +
+                          std::to_string(bytesCollectedResults.num_processed_items_) + " bytes,"
+                   << " Throughput {GettingMissingBlocks}: " << blocksCollectedResults.throughput_ << " blocks/sec and "
+                   << bytesCollectedResults.throughput_ << " bytes/sec, Throughput {cycle}: "
+                   << static_cast<uint64_t>((1000 * blocksCollectedResults.num_processed_items_) / cycleDuration)
+                   << " blocks/sec and "
+                   << static_cast<uint64_t>((1000 * bytesCollectedResults.num_processed_items_) / cycleDuration)
+                   << " bytes/sec, #" << sources_.size() << " sources (first to last): [" << oss.str() << "]");
+      lastFetchingState_ = FetchingState::NotFetching;
       break;
     }
     //////////////////////////////////////////////////////////////////////////
