@@ -20,10 +20,18 @@ namespace concord::util {
 void Throughput::start() {
   LOG_INFO(GL, "xxx " << name_ << " start");
   started_ = true;
-  overallStats_.reset();
+  overallStats_.restart();
   if (numReportsPerWindow_ > 0ul) {
-    currentWindowStats_.reset();
+    currentWindowStats_.restart();
   }
+}
+
+void Throughput::end() {
+  ConcordAssert(started_);
+  LOG_INFO(GL, "xxx " << name_ << " end");
+  started_ = false;
+  overallStats_.reset();
+  if (numReportsPerWindow_ > 0ul) currentWindowStats_.reset();
 }
 
 bool Throughput::report(uint64_t itemsProcessed, bool triggerCalcThroughput) {
@@ -41,7 +49,7 @@ bool Throughput::report(uint64_t itemsProcessed, bool triggerCalcThroughput) {
       // Calculate throughput every numReportsPerWindow_ reports
       previousWindowStats_ = currentWindowStats_;
       previousWindowIndex_ = (reportsCounter_ - 1) / numReportsPerWindow_;
-      currentWindowStats_.reset();
+      currentWindowStats_.restart();
       previousWindowStats_.calcThroughput();
       overallStats_.calcThroughput();
       prevWinCalculated_ = true;
@@ -96,6 +104,10 @@ void Throughput::Stats::reset() {
   results_.numProcessedItems_ = 0ull;
   results_.throughput_ = 0ull;
   durationDT_.reset("durationDT_");
+}
+
+void Throughput::Stats::restart() {
+  reset();
   durationDT_.start();
 }
 

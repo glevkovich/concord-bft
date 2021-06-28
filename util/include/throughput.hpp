@@ -71,8 +71,9 @@ class DurationTracker {
  * A Throughput object is used to calculate the number of items processed in a time unit.
  * After construction, it must be started by calling start(). It can be paused by calling pause().
  * While paused, reports cannot be made. To continue call resume().
- * In order to get meaningful statistics, user should
- * report periodically to the object on the processing progress by calling report().
+ * To end use, call end(). After ending, pause and resume are not allowed, only start() can be called to re-use the
+ * object. In order to get meaningful statistics, user should report periodically to the object on the processing
+ * progress by calling report().
  *
  * If the user supplies a windowSize > 0:
  * 1) User may call all member functions prefixed with getPrevWin*.
@@ -95,6 +96,9 @@ class Throughput {
   // Reset all statistics and record starting time
   void start();
   bool isStarted() { return started_; }
+
+  // Reset all statistics, and set started_ to false. Call a gain start() to re-use object
+  void end();
 
   // pause timer. reporting is not allowed.
   void pause();
@@ -127,6 +131,7 @@ class Throughput {
     DurationTracker<std::chrono::milliseconds> durationDT_;
     Results results_;
 
+    void restart();
     void reset();
     void calcThroughput();
   };

@@ -253,8 +253,10 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
   metrics_component_.Register();
 
   srcFetchersContext_.resize(config_.maxNumberOfChunksInBatch);
-  for (auto &context : srcFetchersContext_) {
-    context.buffer = new char[config_.maxBlockSize];
+  for (uint16_t i{0}; i < config_.maxNumberOfChunksInBatch; ++i) {
+    // for (auto &context : srcFetchersContext_) {
+    srcFetchersContext_[i].buffer = new char[config_.maxBlockSize];
+    srcFetchersContext_[i].index = i;
   }
   buffer_ = new char[maxItemSize_]{};
   LOG_INFO(getLogger(), "Creating BCStateTran object: " << config_);
@@ -1368,12 +1370,12 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
 void BCStateTran::sourceGetBlock(block_fetcher_context *ctx) {
   bool tmp;
   ctx->size = 0;
-  {
-    auto start = steady_clock::now();
-    tmp = as_->getBlock(ctx->blockId, ctx->buffer, &ctx->size);
-    auto end = steady_clock::now();
-    ctx->fetchBlockDurationMicrosec = duration_cast<std::chrono::microseconds>(end - start).count();
-  }
+
+  DurationTracker<std::chrono::microseconds> dt;
+  dt.start();
+  tmp = as_->getBlock(ctx->blockId, ctx->buffer, &ctx->size);
+  ctx->fetchBlockDurationMicrosec = dt.durationMilli();
+  LOG_DEBUG(getLogger(), "Job done for " << KVLOG(ctx->blockId, ctx->index));
   ConcordAssert(tmp);
   ConcordAssertGT(ctx->size, 0);
 }
@@ -1385,13 +1387,19 @@ uint16_t BCStateTran::asyncSourceFetchBlocksConcurrent(uint64_t nextBlockId,
   auto numBlocksToFetch{std::min(config_.maxNumberOfChunksInBatch, numBlocks)};
   auto j{startContextIndex};
 
+  std::set<size_t> indexesToWaitfor;
+
   for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < startContextIndex + numBlocksToFetch); --i, ++j) {
-    srcFetchersContext_[j].blockId = i;
-    if (srcFetchersContext_[j].future.valid())
-      // wait for previous job to end
-      srcFetchersContext_[j].future.get();
-    srcFetchersContext_[j].future =
-        workersPool_.async(std::bind(&BCStateTran::sourceGetBlock, this, _1), &srcFetchersContext_[j]);
+    auto &ctx = srcFetchersContext_[j];
+    // TODO(GG)- get() can be optimize by waiting 0 time and continue calling next jobs which might have finished.
+    if (ctx.future.valid()) {
+      // wait for previous thread to finish
+      LOG_DEBUG(getLogger(), "Waiting for previous thread to finish job on context " << KVLOG(ctx.blockId, ctx.index));
+      ctx.future.get();
+    }
+
+    ctx.blockId = i;
+    ctx.future = workersPool_.async(std::bind(&BCStateTran::sourceGetBlock, this, _1), &ctx);
   }
 
   return j;
@@ -1451,11 +1459,13 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   uint16_t nextChunk = m->lastKnownChunkInLastRequiredBlock + 1;
   uint16_t numOfSentChunks = 0;
 
-  if (!srcFetchersContext_[0].future.valid() || srcFetchersContext_[0].blockId != nextBlockId) {
+  auto isFetchersContextValid = srcFetchersContext_[0].future.valid();
+  if (!isFetchersContextValid || srcFetchersContext_[0].blockId != nextBlockId) {
     LOG_INFO(getLogger(),
              "Source blocks prefetch disabled: first batch or retransmission: " << KVLOG(srcFetchersContext_[0].blockId,
                                                                                          nextBlockId));
-    asyncSourceFetchBlocksConcurrent(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
+    asyncSourceFetchBlocksConcurrent(
+        nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
   }
 
   // fetch blocks and send all chunks for the batch. Also, while looping start to pre-fetch next batch
@@ -2584,8 +2594,8 @@ void BCStateTran::cycleEndSummary() {
   if (gettingMissingBlocksDT_.durationMilli() != 0) {
     blocksCollectedResults = blocks_collected_.getOverallResults();
     bytesCollectedResults = bytes_collected_.getOverallResults();
-    blocks_collected_.pause();
-    bytes_collected_.pause();
+    blocks_collected_.end();
+    bytes_collected_.end();
   }
 
   std::copy(sources_.begin(), sources_.end() - 1, std::ostream_iterator<uint16_t>(oss, ","));

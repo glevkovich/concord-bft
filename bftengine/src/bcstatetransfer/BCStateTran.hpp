@@ -359,8 +359,12 @@ class BCStateTran : public IStateTransfer {
   // worker threads
   ///////////////////////////////////////////////////////////////////////////
   struct block_fetcher_context {
-    uint64_t fetchBlockDurationMicrosec;
+    // input
+    uint16_t index;
     uint64_t blockId;
+
+    // output
+    uint64_t fetchBlockDurationMicrosec;
     char* buffer;
     uint32_t size;
     std::future<void> future;
