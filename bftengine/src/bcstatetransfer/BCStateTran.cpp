@@ -1391,15 +1391,16 @@ uint16_t BCStateTran::asyncSourceFetchBlocksConcurrent(uint64_t nextBlockId,
 
   for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < startContextIndex + numBlocksToFetch); --i, ++j) {
     auto &ctx = srcFetchersContext_[j];
+    // start the job ASAP, assign to on-stack
+    ctx.blockId = i;
+    auto future = workersPool_.async(std::bind(&BCStateTran::sourceGetBlock, this, _1), &ctx);
     // TODO(GG)- get() can be optimize by waiting 0 time and continue calling next jobs which might have finished.
     if (ctx.future.valid()) {
-      // wait for previous thread to finish
+      // wait for previous thread to - we must call it explicitly here, can't relay on dtor
       LOG_DEBUG(getLogger(), "Waiting for previous thread to finish job on context " << KVLOG(ctx.blockId, ctx.index));
       ctx.future.get();
     }
-
-    ctx.blockId = i;
-    ctx.future = workersPool_.async(std::bind(&BCStateTran::sourceGetBlock, this, _1), &ctx);
+    ctx.future = std::move(future);
   }
 
   return j;
