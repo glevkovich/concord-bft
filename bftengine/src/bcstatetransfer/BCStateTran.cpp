@@ -1388,6 +1388,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
                                              m->lastKnownChunkInLastRequiredBlock,
                                              preFetchBlockId));
   size_t ctx_index = 0;
+  char *buffer;
   do {
     // LOG_DEBUG(getLogger(), "xxx wait for j=" << j);
     auto &ctx = src_fetchers_context_[ctx_index];
@@ -1396,13 +1397,10 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
     histograms_.src_get_block_size_bytes->record(ctx.size);
     histograms_.src_get_block_duration->record(ctx.fetch_block_duration_microsec);
     sizeOfNextBlock = ctx.size;
-    buffer_ = ctx.buffer;
-    // LOG_DEBUG(getLogger(), "xxx done wait for " << KVLOG(j, (uintptr_t)buffer_, sizeOfNextBlock));
-    // LOG_DEBUG(getLogger(), "xxx buffer_:" << ::toString(buffer_, sizeOfNextBlock));
+    buffer = ctx.buffer;
 
     LOG_DEBUG(getLogger(), "Start sending next block: " << KVLOG(nextBlockId));
 
-    // getBlock(nextBlockId, buffer_, &sizeOfNextBlock);
     batch_size_bytes += sizeOfNextBlock;
     ++batch_size_blocks;
 
@@ -1425,7 +1423,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
 
     ConcordAssertGT(chunkSize, 0);
 
-    char *pRawChunk = buffer_ + (nextChunk - 1) * config_.maxChunkSize;
+    char *pRawChunk = buffer + (nextChunk - 1) * config_.maxChunkSize;
     ItemDataMsg *outMsg = ItemDataMsg::alloc(chunkSize);  // TODO(GG): improve
 
     outMsg->requestMsgSeqNum = m->msgSeqNum;
