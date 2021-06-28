@@ -630,13 +630,13 @@ void BCStateTran::zeroReservedPage(uint32_t reservedPageId) {
 void BCStateTran::startCollectingStats() {
   firstCollectedBlockId_ = {};
   lastCollectedBlockId_ = {};
-  gettingMissingBlocksDT_.reset("gettingMissingBlocksDT_");
-  commitToChainDT_.reset("commitToChainDT_");
-  gettingCheckpointSummariesDT_.reset("gettingCheckpointSummariesDT_");
-  gettingMissingResPagesDT_.reset("gettingMissingResPagesDT_");
-  cycleDT_.reset("cycleDT_");
-  betweenPutBlocksStTempDT_.reset("betweenPutBlocksStTempDT_");
-  putBlocksStTempDT_.reset("putBlocksStTempDT_");
+  gettingMissingBlocksDT_.reset();
+  commitToChainDT_.reset();
+  gettingCheckpointSummariesDT_.reset();
+  gettingMissingResPagesDT_.reset();
+  cycleDT_.reset();
+  betweenPutBlocksStTempDT_.reset();
+  putBlocksStTempDT_.reset();
 
   sources_.clear();
 
@@ -1014,33 +1014,33 @@ void BCStateTran::onFetchingStateChange(FetchingState newFetchingState) {
             "FetchingState changed from " << stateName(lastFetchingState_) << " to " << stateName(newFetchingState));
   switch (lastFetchingState_) {
     case FetchingState::NotFetching:
-      LOG_INFO(GL, "xxx call cycleDT_.start");
+      // LOG_INFO(GL, "xxx call cycleDT_.start");
       cycleDT_.start();
       break;
     case FetchingState::GettingCheckpointSummaries:
-      LOG_INFO(GL, "xxx call gettingCheckpointSummariesDT_.pause");
+      // LOG_INFO(GL, "xxx call gettingCheckpointSummariesDT_.pause");
       gettingCheckpointSummariesDT_.pause();
       break;
     case FetchingState::GettingMissingBlocks:
-      LOG_INFO(GL, "xxx call gettingMissingBlocksDT_.pause");
+      // LOG_INFO(GL, "xxx call gettingMissingBlocksDT_.pause");
       gettingMissingBlocksDT_.pause();
       break;
     case FetchingState::GettingMissingResPages:
-      LOG_INFO(GL, "xxx call gettingMissingResPagesDT_.pause");
+      // LOG_INFO(GL, "xxx call gettingMissingResPagesDT_.pause");
       gettingMissingResPagesDT_.pause();
       break;
   }
   switch (newFetchingState) {
     case FetchingState::NotFetching:
-      LOG_INFO(GL, "xxx call cycleDT_.pause");
+      // LOG_INFO(GL, "xxx call cycleDT_.pause");
       cycleDT_.pause();
       break;
     case FetchingState::GettingCheckpointSummaries:
-      LOG_INFO(GL, "xxx call gettingCheckpointSummariesDT_.start");
+      // LOG_INFO(GL, "xxx call gettingCheckpointSummariesDT_.start");
       gettingCheckpointSummariesDT_.start();
       break;
     case FetchingState::GettingMissingBlocks:
-      LOG_INFO(GL, "xxx call gettingMissingBlocksDT_.start");
+      // LOG_INFO(GL, "xxx call gettingMissingBlocksDT_.start");
       gettingMissingBlocksDT_.start();
       if (blocks_collected_.isStarted()) {
         blocks_collected_.resume();
@@ -1051,7 +1051,7 @@ void BCStateTran::onFetchingStateChange(FetchingState newFetchingState) {
       }
       break;
     case FetchingState::GettingMissingResPages:
-      LOG_INFO(GL, "xxx call gettingMissingResPagesDT_.start");
+      // LOG_INFO(GL, "xxx call gettingMissingResPagesDT_.start");
       gettingMissingResPagesDT_.start();
       break;
   }
@@ -1374,7 +1374,7 @@ void BCStateTran::sourceGetBlock(block_fetcher_context *ctx) {
   DurationTracker<std::chrono::microseconds> dt;
   dt.start();
   tmp = as_->getBlock(ctx->blockId, ctx->buffer, &ctx->size);
-  ctx->fetchBlockDurationMicrosec = dt.durationMilli();
+  ctx->fetchBlockDurationMicrosec = dt.totalDuration(true);
   LOG_DEBUG(getLogger(), "Job done for " << KVLOG(ctx->blockId, ctx->index));
   ConcordAssert(tmp);
   ConcordAssertGT(ctx->size, 0);
@@ -1464,8 +1464,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
     LOG_INFO(getLogger(),
              "Source blocks prefetch disabled: first batch or retransmission: " << KVLOG(srcFetchersContext_[0].blockId,
                                                                                          nextBlockId));
-    asyncSourceFetchBlocksConcurrent(
-        nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
+    asyncSourceFetchBlocksConcurrent(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
   }
 
   // fetch blocks and send all chunks for the batch. Also, while looping start to pre-fetch next batch
@@ -1479,15 +1478,20 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
                                              preFetchBlockId));
   size_t ctx_index = 0;
   char *buffer;
+  DurationTracker<std::chrono::microseconds> waitFutureDuration;
   do {
     // wait for worker to finish getting next block
     auto &ctx = srcFetchersContext_[ctx_index];
     ConcordAssert(ctx.future.valid());
+    waitFutureDuration.start();
     ctx.future.get();
     ConcordAssertEQ(ctx.blockId, nextBlockId);
     sizeOfNextBlock = ctx.size;
     buffer = ctx.buffer;
-    LOG_DEBUG(getLogger(), "Start sending next block: " << KVLOG(nextBlockId, sizeOfNextBlock));
+    LOG_DEBUG(
+        getLogger(),
+        "Start sending next block: " << KVLOG(nextBlockId, sizeOfNextBlock, waitFutureDuration.totalDuration(true)));
+    waitFutureDuration.reset();
 
     // some statistics
     histograms_.src_get_block_size_bytes->record(ctx.size);
@@ -1543,13 +1547,13 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
 
     // if we've already sent enough chunks
     if (numOfSentChunks >= config_.maxNumberOfChunksInBatch) {
-      LOG_DEBUG(getLogger(), "Sent enough chunks: " << KVLOG(numOfSentChunks));
+      LOG_DEBUG(getLogger(), "Batch end - sent enough chunks: " << KVLOG(numOfSentChunks));
       break;
     } else if (static_cast<uint16_t>(nextChunk + 1) <= numOfChunksInNextBlock) {
       // we still have chunks in block
       nextChunk++;
     } else if ((nextBlockId - 1) < m->firstRequiredBlock) {
-      LOG_DEBUG(getLogger(), "Sent all relevant blocks: " << KVLOG(m->firstRequiredBlock));
+      LOG_DEBUG(getLogger(), "Batch end - sent all relevant blocks: " << KVLOG(m->firstRequiredBlock));
       break;
     } else {
       // no more chunks in the block
@@ -2438,15 +2442,15 @@ void BCStateTran::processData() {
       // getMissingBlocksSummaryWindowSize
       reportCollectingStatus(firstRequiredBlock, actualBlockSize, lastBlock);
       if (lastBlock) {
-        LOG_INFO(GL, "xxx call commitToChainDT_.start");
+        // LOG_INFO(GL, "xxx call commitToChainDT_.start");
         commitToChainDT_.start();
         blocks_collected_.pause();
         bytes_collected_.pause();
       } else {
-        LOG_INFO(GL, "xxx call putBlocksStTempDT_.start");
+        // LOG_INFO(GL, "xxx call putBlocksStTempDT_.start");
         putBlocksStTempDT_.start();
       }
-      LOG_INFO(GL, "xxx call betweenPutBlocksStTempDT_.pause");
+      // LOG_INFO(GL, "xxx call betweenPutBlocksStTempDT_.pause");
       betweenPutBlocksStTempDT_.pause();
       LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
       {
@@ -2454,9 +2458,9 @@ void BCStateTran::processData() {
         ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
       }
       if (!lastBlock) {
-        LOG_INFO(GL, "xxx call putBlocksStTempDT_.pause");
+        // LOG_INFO(GL, "xxx call putBlocksStTempDT_.pause");
         putBlocksStTempDT_.pause();
-        LOG_INFO(GL, "xxx call betweenPutBlocksStTempDT_.start");
+        // LOG_INFO(GL, "xxx call betweenPutBlocksStTempDT_.start");
         betweenPutBlocksStTempDT_.start();
         as_->getPrevDigestFromBlock(nextRequiredBlock_,
                                     reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
@@ -2473,7 +2477,7 @@ void BCStateTran::processData() {
       } else {
         // this is the last block we need
         // report collecting status (without vblock) into log
-        LOG_INFO(GL, "xxx call commitToChainDT_.pause");
+        // LOG_INFO(GL, "xxx call commitToChainDT_.pause");
         commitToChainDT_.pause();
         g.txn()->setFirstRequiredBlock(0);
         g.txn()->setLastRequiredBlock(0);
@@ -2485,7 +2489,7 @@ void BCStateTran::processData() {
 
         // Log histograms for destination when GettingMissingBlocks is done
         // Do it for a cycle that lasted more than 10 seconds
-        LOG_INFO(GL, "xxx call cycleDT_.pause");
+        // LOG_INFO(GL, "xxx call cycleDT_.pause");
         auto duration = cycleDT_.pause();
         if (duration > 10000) {
           auto &registrar = concord::diagnostics::RegistrarSingleton::getInstance();
@@ -2496,7 +2500,7 @@ void BCStateTran::processData() {
         } else
           LOG_INFO(getLogger(),
                    "skip logging snapshots, cycle is very short (not enough statistics)" << KVLOG(duration));
-        LOG_INFO(GL, "xxx call cycleDT_.start");
+        // LOG_INFO(GL, "xxx call cycleDT_.start");
         cycleDT_.start();
         LOG_DEBUG(getLogger(), "Moved to GettingMissingResPages");
         sendFetchResPagesMsg(0);
@@ -2590,8 +2594,8 @@ void BCStateTran::cycleEndSummary() {
   Throughput::Results bytesCollectedResults;
   std::ostringstream oss;
 
-  LOG_INFO(GL, "xxx call gettingMissingBlocksDT_.durationMilli");
-  if (gettingMissingBlocksDT_.durationMilli() != 0) {
+  // LOG_INFO(GL, "xxx call gettingMissingBlocksDT_.totalDuration");
+  if (gettingMissingBlocksDT_.totalDuration() != 0) {
     blocksCollectedResults = blocks_collected_.getOverallResults();
     bytesCollectedResults = bytes_collected_.getOverallResults();
     blocks_collected_.end();
@@ -2600,14 +2604,14 @@ void BCStateTran::cycleEndSummary() {
 
   std::copy(sources_.begin(), sources_.end() - 1, std::ostream_iterator<uint16_t>(oss, ","));
   oss << sources_.back();
-  LOG_INFO(GL, "xxx call cycleDT_.durationMilli");
-  auto cycleDuration = cycleDT_.durationMilli();
-  auto gettingCheckpointSummariesDuration = gettingCheckpointSummariesDT_.durationMilli();
-  auto gettingMissingBlocksDuration = gettingMissingBlocksDT_.durationMilli();
-  auto commitToChainDuration = commitToChainDT_.durationMilli();
-  auto gettingMissingResPagesDuration = gettingMissingResPagesDT_.durationMilli();
-  auto betweenPutBlocksStDuration = betweenPutBlocksStTempDT_.durationMilli();
-  auto putBlocksStTempDuration = putBlocksStTempDT_.durationMilli();
+  // LOG_INFO(GL, "xxx call cycleDT_.totalDuration");
+  auto cycleDuration = cycleDT_.totalDuration(true);
+  auto gettingCheckpointSummariesDuration = gettingCheckpointSummariesDT_.totalDuration(true);
+  auto gettingMissingBlocksDuration = gettingMissingBlocksDT_.totalDuration(true);
+  auto commitToChainDuration = commitToChainDT_.totalDuration(true);
+  auto gettingMissingResPagesDuration = gettingMissingResPagesDT_.totalDuration(true);
+  auto betweenPutBlocksStDuration = betweenPutBlocksStTempDT_.totalDuration(true);
+  auto putBlocksStTempDuration = putBlocksStTempDT_.totalDuration(true);
   LOG_INFO(getLogger(),
            "State Transfer cycle ended (#"
                << cycleCounter_ << ") , Total Duration: " << cycleDuration << "ms, "

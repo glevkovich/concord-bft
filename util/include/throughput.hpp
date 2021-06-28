@@ -23,9 +23,9 @@ namespace concord::util {
 
 /** A Duration Tracker allows to track multiple none-continues time intervals (durations by).
  * This is done by calling start() / pause() multiple times.
- * If the last call to the tracker was start(), call durationMilli() to get the sum of intervals, including current
+ * If the last call to the tracker was start(), call totalDuration() to get the sum of intervals, including current
  * still mesured interval. If ladt call to teacker was pause(): you may get the sum of intervals from the returned
- * valuem or call durationMilli() explicitly. To reset (re-use) the tracker, call reset() and then start();
+ * valuem or call totalDuration() explicitly. To reset (re-use) the tracker, call reset() and then start();
  */
 template <typename T>
 class DurationTracker {
@@ -34,37 +34,40 @@ class DurationTracker {
     ConcordAssert(!running_);
     startTime_ = std::chrono::steady_clock::now();
     running_ = true;
-    LOG_INFO(GL, "xxx " << name_ << " start" << KVLOG(running_));
+    /// LOG_INFO(GL, "xxx " << name_ << " start" << KVLOG(running_));
   }
   uint64_t pause() {
-    LOG_INFO(GL, "xxx " << name_ << " pause" << KVLOG(running_, durationMillisec_));
+    // LOG_INFO(GL, "xxx " << name_ << " pause" << KVLOG(running_, totalDuration_));
     if (running_)
-      durationMillisec_ += std::chrono::duration_cast<T>(std::chrono::steady_clock::now() - startTime_).count();
+      totalDuration_ += std::chrono::duration_cast<T>(std::chrono::steady_clock::now() - startTime_).count();
     running_ = false;
-    LOG_INFO(GL, "xxx " << name_ << " pause" << KVLOG(running_, durationMillisec_));
-    return durationMillisec_;
+    // LOG_INFO(GL, "xxx " << name_ << " pause" << KVLOG(running_, totalDuration_));
+    return totalDuration_;
   }
-  void reset(std::string&& name) {
-    durationMillisec_ = 0;
+  void reset() {
+    totalDuration_ = 0;
     running_ = false;
-    name_ = std::move(name_);
-    LOG_INFO(GL, "xxx " << name_ << " reset");
+    // name_ = std::move(name_);
+    // LOG_INFO(GL, "xxx " << name_ << " reset");
   }
-  uint64_t durationMilli() {
-    LOG_INFO(GL, "xxx " << name_ << " durationMilli" << KVLOG(running_, durationMillisec_));
+  uint64_t totalDuration(bool doReset = false) {
+    // LOG_INFO(GL, "xxx " << name_ << " totalDuration" << KVLOG(running_, totalDuration_));
     if (running_) {
-      durationMillisec_ = pause();
-      start();
+      totalDuration_ = pause();
+      if (doReset)
+        reset();
+      else
+        start();
     }
-    LOG_INFO(GL, "xxx " << name_ << " durationMilli" << KVLOG(running_, durationMillisec_));
-    return durationMillisec_;
+    // LOG_INFO(GL, "xxx " << name_ << " totalDuration" << KVLOG(running_, totalDuration_));
+    return totalDuration_;
   };
 
  private:
-  uint64_t durationMillisec_ = 0;
+  uint64_t totalDuration_ = 0;
   std::chrono::time_point<std::chrono::steady_clock> startTime_;
   bool running_ = false;
-  std::string name_;
+  // std::string name_;
 };
 
 /**
