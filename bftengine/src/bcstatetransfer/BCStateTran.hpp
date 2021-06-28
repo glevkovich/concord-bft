@@ -427,13 +427,13 @@ class BCStateTran : public IStateTransfer {
     CounterHandle handle_ItemData_msg_;
 
     GaugeHandle overall_blocks_collected_;
-    GaugeHandle overall_blocks_throughtput_;
+    GaugeHandle overall_blocks_throughput_;
     GaugeHandle overall_bytes_collected_;
-    GaugeHandle overall_bytes_throughtput_;
+    GaugeHandle overall_bytes_throughput_;
     GaugeHandle prev_win_blocks_collected_;
-    GaugeHandle prev_win_blocks_throughtput_;
+    GaugeHandle prev_win_blocks_throughput_;
     GaugeHandle prev_win_bytes_collected_;
-    GaugeHandle prev_win_bytes_throughtput_;
+    GaugeHandle prev_win_bytes_throughput_;
   };
 
   mutable Metrics metrics_;
