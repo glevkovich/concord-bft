@@ -223,11 +223,11 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
                metrics_component_.RegisterCounter("on_transferring_complete"),
                metrics_component_.RegisterCounter("handle_state_transfer_msg"),
                metrics_component_.RegisterCounter("handle_AskForCheckpointSummaries_msg"),
-               metrics_component_.RegisterCounter("handle_CheckpointsSummary_msg"),
-               metrics_component_.RegisterCounter("handle_FetchBlocks_msg"),
-               metrics_component_.RegisterCounter("handle_FetchResPages_msg"),
-               metrics_component_.RegisterCounter("handle_RejectFetching_msg"),
-               metrics_component_.RegisterCounter("handle_ItemData_msg"),
+               metrics_component_.RegisterCounter("dst_handle_CheckpointsSummary_msg"),
+               metrics_component_.RegisterCounter("src_handle_FetchBlocks_msg"),
+               metrics_component_.RegisterCounter("src_handle_FetchResPages_msg"),
+               metrics_component_.RegisterCounter("dst_handle_RejectFetching_msg"),
+               metrics_component_.RegisterCounter("dst_handle_ItemData_msg"),
 
                metrics_component_.RegisterGauge("overall_blocks_collected", 0),
                metrics_component_.RegisterGauge("overall_blocks_throughtput", 0),
@@ -242,9 +242,9 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       first_collected_block_num_({}),
       workers_pool_(config_.numberOfWorkerThreads),
       src_send_batch_duration_rec_(histograms_.src_send_batch_duration),
-      time_between_sendFetchBlocksMsg_rec_(histograms_.time_between_sendFetchBlocksMsg),
+      time_between_sendFetchBlocksMsg_rec_(histograms_.dst_time_between_sendFetchBlocksMsg),
       time_in_handoff_queue_rec_(histograms_.time_in_handoff_queue),
-      dest_block_from_chunks_duration_rec_(histograms_.dest_block_from_chunks_duration) {
+      dest_block_from_chunks_duration_rec_(histograms_.dst_block_from_chunks_duration) {
   ConcordAssertNE(stateApi, nullptr);
   ConcordAssertGE(replicas_.size(), 3U * config_.fVal + 1U);
   ConcordAssert(replicas_.count(config_.myReplicaId) == 1 || config.isReadOnly);
@@ -642,9 +642,10 @@ void BCStateTran::startCollectingStats() {
   metrics_.prev_win_bytes_collected_.Get().Set(0ull);
   metrics_.prev_win_bytes_throughtput_.Get().Set(0ull);
 
+  src_send_batch_duration_rec_.clear();
   time_between_sendFetchBlocksMsg_rec_.clear();
   time_in_handoff_queue_rec_.clear();
-  // memset(&total_processing_time_microsec_, 0, sizeof(total_processing_time_microsec_));
+  dest_block_from_chunks_duration_rec_.clear();
 }
 
 void BCStateTran::startCollectingState() {
@@ -775,7 +776,6 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
   switch (msgHeader->type) {
     case MsgType::AskForCheckpointSummaries:
       if (fs == FetchingState::NotFetching) {
-        TimeRecorder scoped_timer(*histograms_.handle_AskForCheckpointSummaries_msg);
         metrics_.handle_AskForCheckpointSummaries_msg_.Get().Inc();
         noDelete = onMessage(reinterpret_cast<AskForCheckpointSummariesMsg *>(msg), msgLen, senderId);
         msg_processed = true;
@@ -783,27 +783,24 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
       break;
     case MsgType::CheckpointsSummary:
       if (fs == FetchingState::GettingCheckpointSummaries) {
-        TimeRecorder scoped_timer(*histograms_.handle_CheckpointsSummary_msg);
         metrics_.handle_CheckpointsSummary_msg_.Get().Inc();
         noDelete = onMessage(reinterpret_cast<CheckpointSummaryMsg *>(msg), msgLen, senderId);
         msg_processed = true;
       }
       break;
     case MsgType::FetchBlocks: {
-      TimeRecorder scoped_timer(*histograms_.handle_FetchBlocks_msg);
+      TimeRecorder scoped_timer(*histograms_.src_handle_FetchBlocks_msg);
       metrics_.handle_FetchBlocks_msg_.Get().Inc();
       noDelete = onMessage(reinterpret_cast<FetchBlocksMsg *>(msg), msgLen, senderId);
       msg_processed = true;
     } break;
     case MsgType::FetchResPages: {
-      TimeRecorder scoped_timer(*histograms_.handle_FetchResPages_msg);
       metrics_.handle_FetchResPages_msg_.Get().Inc();
       noDelete = onMessage(reinterpret_cast<FetchResPagesMsg *>(msg), msgLen, senderId);
       msg_processed = true;
     } break;
     case MsgType::RejectFetching:
       if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages) {
-        TimeRecorder scoped_timer(*histograms_.handle_RejectFetching_msg);
         metrics_.handle_RejectFetching_msg_.Get().Inc();
         noDelete = onMessage(reinterpret_cast<RejectFetchingMsg *>(msg), msgLen, senderId);
         msg_processed = true;
@@ -811,7 +808,7 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
       break;
     case MsgType::ItemData:
       if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages) {
-        TimeRecorder scoped_timer(*histograms_.handle_ItemData_msg);
+        TimeRecorder scoped_timer(*histograms_.dst_handle_ItemData_msg);
         metrics_.handle_ItemData_msg_.Get().Inc();
         noDelete = onMessage(reinterpret_cast<ItemDataMsg *>(msg), msgLen, senderId);
         msg_processed = true;
@@ -824,7 +821,7 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
   if (msg_processed) {
     uint64_t interval =
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
-    // total_processing_time_microsec_[msgHeader->type] += interval;
+
     histograms_.handle_state_transfer_msg->record(interval);
   }
   if (!noDelete) replicaForStateTransfer_->freeStateTransferMsg(msg);
@@ -2313,7 +2310,7 @@ void BCStateTran::processData() {
     bool newBlockIsValid = false;
 
     if (newBlock && isGettingBlocks) {
-      TimeRecorder scoped_timer(*histograms_.dest_digest_calc_duration);
+      TimeRecorder scoped_timer(*histograms_.dst_digest_calc_duration);
       ConcordAssert(!badDataFromCurrentSourceReplica);
       newBlockIsValid = checkBlock(nextRequiredBlock_, digestOfNextRequiredBlock, buffer_, actualBlockSize);
       badDataFromCurrentSourceReplica = !newBlockIsValid;
@@ -2346,7 +2343,7 @@ void BCStateTran::processData() {
       if (lastBlock) commitToChainStartTime = std::chrono::steady_clock::now();
       LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
       {
-        TimeRecorder scoped_timer(*histograms_.dest_put_block_duration);
+        TimeRecorder scoped_timer(*histograms_.dst_put_block_duration);
         ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
       }
       if (lastBlock) {

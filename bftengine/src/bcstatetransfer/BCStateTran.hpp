@@ -489,30 +489,32 @@ class BCStateTran : public IStateTransfer {
     Recorders() {
       auto& registrar = concord::diagnostics::RegistrarSingleton::getInstance();
       registrar.perf.registerComponent("state_transfer",
-                                       {on_timer,
-                                        handle_state_transfer_msg,
-                                        time_in_handoff_queue,
-                                        consistency_check_duration,
-
-                                        handle_AskForCheckpointSummaries_msg,
-                                        handle_CheckpointsSummary_msg,
-                                        handle_FetchBlocks_msg,
-                                        handle_FetchResPages_msg,
-                                        handle_RejectFetching_msg,
-                                        handle_ItemData_msg,
-
-                                        time_between_sendFetchBlocksMsg,
-                                        src_get_block_duration,
-                                        src_get_block_size_bytes,
-                                        src_send_batch_duration,
-                                        src_send_batch_size_bytes,
-                                        src_send_batch_size_blocks,
-                                        dest_put_block_duration,
-                                        dest_digest_calc_duration,
-                                        src_calc_next_required_block_duration,
-                                        dest_block_from_chunks_duration});
+                                       {
+                                           // common
+                                           on_timer,
+                                           handle_state_transfer_msg,
+                                           time_in_handoff_queue,
+                                           consistency_check_duration,
+                                           // destination
+                                           dst_handle_ItemData_msg,
+                                           dst_time_between_sendFetchBlocksMsg,
+                                           dst_put_block_duration,
+                                           dst_digest_calc_duration,
+                                           dst_block_from_chunks_duration,
+                                           // source
+                                           src_handle_FetchBlocks_msg,
+                                           src_get_block_duration,
+                                           src_get_block_size_bytes,
+                                           src_send_batch_duration,
+                                           src_send_batch_size_bytes,
+                                           src_send_batch_size_blocks,
+                                           src_calc_next_required_block_duration,
+                                       });
     }
-    // main callbacks historgrams
+    //////////////////////////////////////////////////////////
+    // Shared Recorders - match the above registered recorders
+    //////////////////////////////////////////////////////////
+    // common
     DEFINE_SHARED_RECORDER(on_timer, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
         handle_state_transfer_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
@@ -520,21 +522,20 @@ class BCStateTran : public IStateTransfer {
         time_in_handoff_queue, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
         consistency_check_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    // message handling historgrams
+    // destination
     DEFINE_SHARED_RECORDER(
-        handle_AskForCheckpointSummaries_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+        dst_handle_ItemData_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
-        handle_CheckpointsSummary_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+        dst_time_between_sendFetchBlocksMsg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
-        handle_FetchBlocks_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+        dst_put_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
-        handle_FetchResPages_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+        dst_digest_calc_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
-        handle_RejectFetching_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    DEFINE_SHARED_RECORDER(handle_ItemData_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    // source historgrams
+        dst_block_from_chunks_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    // source
     DEFINE_SHARED_RECORDER(
-        time_between_sendFetchBlocksMsg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+        src_handle_FetchBlocks_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
         src_get_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(src_get_block_size_bytes, 1, MAX_BLOCK_SIZE, 3, concord::diagnostics::Unit::BYTES);
@@ -543,13 +544,7 @@ class BCStateTran : public IStateTransfer {
     DEFINE_SHARED_RECORDER(src_send_batch_size_bytes, 1, MAX_BATCH_SIZE_BYTES, 3, concord::diagnostics::Unit::BYTES);
     DEFINE_SHARED_RECORDER(src_send_batch_size_blocks, 1, MAX_BATCH_SIZE_BLOCKS, 3, concord::diagnostics::Unit::COUNT);
     DEFINE_SHARED_RECORDER(
-        dest_put_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    DEFINE_SHARED_RECORDER(
-        dest_digest_calc_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    DEFINE_SHARED_RECORDER(
         src_calc_next_required_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    DEFINE_SHARED_RECORDER(
-        dest_block_from_chunks_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
   };
   Recorders histograms_;
 
@@ -559,10 +554,6 @@ class BCStateTran : public IStateTransfer {
   AsyncTimeRecorder<true> time_between_sendFetchBlocksMsg_rec_;
   AsyncTimeRecorder<true> time_in_handoff_queue_rec_;
   AsyncTimeRecorder<true> dest_block_from_chunks_duration_rec_;
-
-  // An array of size MsgTypeLast which holds the total processing time for each message size during ST cycle.
-  // index 0 holds the total for all messages
-  // std::array<uint64_t, MsgType::MsgTypeLast> total_processing_time_microsec_; //TO consider remove
-};  // namespace bftEngine::bcst::impl
+};  // class BCStateTran
 
 }  // namespace bftEngine::bcst::impl
