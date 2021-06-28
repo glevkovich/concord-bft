@@ -2261,14 +2261,16 @@ void BCStateTran::processData() {
 
       ConcordAssertAND(lastChunkInRequiredBlock >= 1, actualBlockSize > 0);
 
-      bool lastBlock = firstRequiredBlock >= nextRequiredBlock_;
-      LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << "lastBlock=" << lastBlock << KVLOG(nextRequiredBlock_, actualBlockSize) << std::noboolalpha);
+      const uint64_t firstRequiredBlock = g.txn()->getFirstRequiredBlock();
+      bool lastBlock = (firstRequiredBlock >= nextRequiredBlock_);
+      LOG_DEBUG(getLogger(),
+                "Add block: " << std::boolalpha << "lastBlock=" << lastBlock
+                              << KVLOG(nextRequiredBlock_, actualBlockSize) << std::noboolalpha);
 
       ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
 
-      const uint64_t firstRequiredBlock = g.txn()->getFirstRequiredBlock();
       reportCollectingStatus(firstRequiredBlock, actualBlockSize);
-      if (lastBlock) {
+      if (!lastBlock) {
         as_->getPrevDigestFromBlock(nextRequiredBlock_,
                                     reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
         nextRequiredBlock_--;
