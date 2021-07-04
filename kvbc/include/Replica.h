@@ -27,6 +27,7 @@
 #include "bftengine/DbMetadataStorage.hpp"
 #include "storage_factory_interface.h"
 #include "ControlStateManager.hpp"
+#include "thread_pool.hpp"
 
 #include <ccron/cron_table_registry.hpp>
 #include <ccron/ticks_generator.hpp>
@@ -97,6 +98,7 @@ class Replica : public IReplica,
   // IAppState implementation
   bool hasBlock(BlockId blockId) const override;
   bool getBlock(uint64_t blockId, char *outBlock, uint32_t *outBlockSize) override;
+  std::future<void> startGetBlockAsync(GetBlockContext &inOutCtx) override;
   bool getPrevDigestFromBlock(uint64_t blockId, bftEngine::bcst::StateTransferDigest *) override;
   bool putBlock(const uint64_t blockId, const char *blockData, const uint32_t blockSize) override;
   uint64_t getLastReachableBlockNum() const override;
@@ -186,6 +188,7 @@ class Replica : public IReplica,
   const std::shared_ptr<concord::secretsmanager::ISecretsManagerImpl> secretsManager_;
   std::unique_ptr<concord::kvbc::StReconfigurationHandler> stReconfigurationSM_;
   std::shared_ptr<cron::CronTableRegistry> cronTableRegistry_{std::make_shared<cron::CronTableRegistry>()};
+  concord::util::ThreadPool blocksIOWorkersPool_;
 };  // namespace concord::kvbc
 
 }  // namespace concord::kvbc

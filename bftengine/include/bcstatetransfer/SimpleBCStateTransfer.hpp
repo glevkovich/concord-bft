@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <set>
 #include <memory>
+#include <future>
 
 #include "bftengine/IStateTransfer.hpp"
 #include "Metrics.hpp"
@@ -75,6 +76,29 @@ class IAppState {
   // If block blockId exists, then its content is returned via the arguments
   // outBlock and outBlockSize. Returns true IFF block blockId exists.
   virtual bool getBlock(uint64_t blockId, char *outBlock, uint32_t *outBlockSize) = 0;
+
+  struct GetBlockContext {
+    // input
+    uint64_t blockId;
+
+    // output
+    std::chrono::microseconds jobDuration;
+    bool exist;
+    std::unique_ptr<char[]> buffer;
+    uint32_t size;
+  };
+
+  // An asynchronous version for the above getBlock.
+  // It receives a GetBlockContext as an input/output. It is the user duty to allocated memory resources on buffer.
+  // For a given blockId, a job is invoked
+  // asynchronously, to get the block from storage and fill buffer and size. After job is created, this call returns
+  // immidiately with a future, while job is executed by a seperate worker thread.
+  // Before accesing buffer and size, user must call the returned future.get() to make sure that job has
+  // been done.
+  // User should 1st check exist flag in the output:
+  // exist=true - block exist and other outputs are valid.
+  // exist=false block does not exist, other output should be ignored.
+  virtual std::future<void> startGetBlockAsync(GetBlockContext &inOutCtx) = 0;
 
   // If block blockId exists, then the digest of block blockId-1 is returned via
   // the argument outPrevBlockDigest. Returns true IFF block blockId exists.

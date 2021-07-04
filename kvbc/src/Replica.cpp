@@ -31,10 +31,12 @@
 #include "reconfiguration_add_block_handler.hpp"
 #include "st_reconfiguraion_sm.hpp"
 #include "bftengine/ControlHandler.hpp"
+#include "throughput.hpp"
 
 using bft::communication::ICommunication;
 using bftEngine::bcst::StateTransferDigest;
 using namespace concord::diagnostics;
+using concord::util::DurationTracker;
 
 using concord::storage::DBMetadataStorage;
 
@@ -272,7 +274,9 @@ Replica::Replica(ICommunication *comm,
       replicaConfig_(replicaConfig),
       aggregator_(aggregator),
       pm_{pm},
-      secretsManager_{secretsManager} {
+      secretsManager_{secretsManager},
+      blocksIOWorkersPool_((replicaConfig.numWorkerThreadsForBlockIO > 0) ? replicaConfig.numWorkerThreadsForBlockIO
+                                                                          : std::thread::hardware_concurrency()) {
   // Populate ST configuration
   bftEngine::bcst::Config stConfig = {
     replicaConfig_.replicaId,
@@ -446,6 +450,24 @@ bool Replica::getBlock(uint64_t blockId, char *outBlock, uint32_t *outBlockSize)
   LOG_DEBUG(logger, KVLOG(blockId, *outBlockSize));
   std::memcpy(outBlock, ser.data(), *outBlockSize);
   return true;
+}
+
+std::future<void> Replica::startGetBlockAsync(GetBlockContext &inOutCtx) {
+  return blocksIOWorkersPool_.async(
+      [this](GetBlockContext &ctx) {
+        auto start = std::chrono::steady_clock::now();
+        ctx.size = 0;
+        ctx.exist = getBlock(ctx.blockId, ctx.buffer.get(), &ctx.size);
+        ctx.jobDuration =
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start);
+        LOG_DEBUG(logger, "Job done: " << KVLOG(ctx.blockId, ctx.size, ctx.exist, ctx.jobDuration.count()));
+        if (ctx.exist) {
+          ConcordAssertGT(ctx.size, 0);
+        } else {
+          ConcordAssertEQ(ctx.size, 0);
+        }
+      },
+      std::ref(inOutCtx));
 }
 
 bool Replica::getBlockFromObjectStore(uint64_t blockId, char *outBlock, uint32_t *outBlockSize) {
