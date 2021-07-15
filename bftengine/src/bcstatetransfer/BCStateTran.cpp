@@ -158,6 +158,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
                       config_.fetchRetransmissionTimeoutMs,
                       config_.sourceReplicaReplacementTimeoutMs,
                       ST_SRC_LOG},
+      blockDataPool_(config_.maxNumberOfChunksInBatch, config_.maxBlockSize),
       last_metrics_dump_time_(0),
       metrics_dump_interval_in_sec_{std::chrono::seconds(config_.metricsDumpIntervalSec)},
       metrics_component_{
@@ -249,10 +250,15 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
   // Register metrics component with the default aggregator.
   metrics_component_.Register();
 
-  for (size_t i{0}; i < config_.maxNumberOfChunksInBatch; ++i)
-    srcGetBlockContextes_.emplace_back(BlockIOContext(i, config_.maxBlockSize));
-  buffer_ = new char[maxItemSize_]{};
   LOG_INFO(getLogger(), "Creating BCStateTran object: " << config_);
+
+  for (size_t i{0}; i < config_.maxNumberOfChunksInBatch; ++i) {
+    srcGetBlockContextes_.emplace_back(BlockIOContext(i));
+  }
+  buffer_ = new char[maxItemSize_]{};
+  LOG_INFO(getLogger(),
+           "Allocated " << config_.maxNumberOfChunksInBatch + 1 << " buffers, " << maxItemSize_
+                        << " Bytes each in buffer_ and blockDataPool_");
 
   if (config_.runInSeparateThread) {
     handoff_.reset(new concord::util::Handoff(config_.myReplicaId));
@@ -1356,6 +1362,9 @@ uint16_t BCStateTran::asyncGetBlocksConcurrent(uint64_t nextBlockId,
 
   LOG_DEBUG(getLogger(), KVLOG(nextBlockId, firstRequiredBlock, numBlocks, startContextIndex));
   for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < startContextIndex + numBlocks); --i, ++j) {
+    if (j > 0){
+      LOG_INFO(getLogger(), "xxx use count 1" << KVLOG(srcGetBlockContextes_[j-1].index, srcGetBlockContextes_[j-1].blockId, srcGetBlockContextes_[j-1].blockData.use_count()));
+    }
     auto &ctx = srcGetBlockContextes_[j];
     // start the job ASAP, return result to on-stack future
     if (ctx.future.valid()) {
@@ -1370,9 +1379,13 @@ uint16_t BCStateTran::asyncGetBlocksConcurrent(uint64_t nextBlockId,
         // ignore and continue, this job is irrlevant
         LOG_WARN(getLogger(), "Exception on irrelevant job, ignoring..");
       }
+    } else {
+      ctx.blockData = blockDataPool_.alloc();
+      LOG_INFO(getLogger(), "xxx allocated after aloc :" << KVLOG((uintptr_t)ctx.blockData.get()));
     }
     ctx.blockId = i;
     ctx.future = as_->getBlockAsync(ctx.blockId, ctx.blockData.get(), &ctx.actualBlockSize);
+    LOG_INFO(getLogger(), "xxx use count 2" << KVLOG(ctx.index, ctx.blockId, ctx.blockData.use_count()));
   }
 
   return j;
@@ -1546,7 +1559,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
 
     metrics_.sent_item_data_msg_++;
     replicaForStateTransfer_->sendStateTransferMessage(reinterpret_cast<char *>(outMsg), outMsg->size(), replicaId);
-
+    blockDataPool_.free(std::move(srcGetBlockContextes_[ctxIndex].blockData));
     ItemDataMsg::free(outMsg);
     numOfSentChunks++;
 
@@ -2459,16 +2472,18 @@ void BCStateTran::processData() {
         commitToChainDT_.start();
         blocks_collected_.pause();
         bytes_collected_.pause();
-      } else {
-        BlockIOContext ctx(0, config_.maxBlockSize); // TODO - index?
+      } else if (!blockDataPool_.empty()) {
+        // BlockIOContext ctx(0, config_.maxBlockSize);  // TODO - index?
+        BlockIOContext ctx(0);  // TODO - index?
         ctx.blockId = nextRequiredBlock_;
         ctx.actualBlockSize = actualBlockSize;
+        ctx.blockData = blockDataPool_.alloc();
         memcpy(ctx.blockData.get(), buffer_, actualBlockSize);
         ctx.future = as_->putBlockAsync(nextRequiredBlock_, ctx.blockData.get(), ctx.actualBlockSize, false);
-        ConcordAssert(ctx.future.valid()); // TODO - remove?
+        ConcordAssert(ctx.future.valid());  // TODO - remove?
         dstPutBlockContexes_.push_back(std::move(ctx));
-        ConcordAssert(dstPutBlockContexes_.back().future.valid()); // TODO - remove?
-        ConcordAssert(dstPutBlockContexes_.front().future.valid()); // TODO - remove?
+        ConcordAssert(dstPutBlockContexes_.back().future.valid());   // TODO - remove?
+        ConcordAssert(dstPutBlockContexes_.front().future.valid());  // TODO - remove?
         LOG_TRACE(getLogger(), KVLOG(dstPutBlockContexes_.size()));
 
         //{ f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
@@ -2480,8 +2495,7 @@ void BCStateTran::processData() {
         LOG_TRACE(getLogger(), KVLOG(dstPutBlockContexes_.size()));
         auto &ctx = dstPutBlockContexes_.front();
         ConcordAssert(ctx.future.valid());  // TODO - add log
-        if (!lastBlock &&
-            ctx.future.wait_for(std::chrono::nanoseconds(0)) != std::future_status::ready) {
+        if (!lastBlock && ctx.future.wait_for(std::chrono::nanoseconds(0)) != std::future_status::ready) {
           // TODO - trigger a timer 1ms if handoff is empty
           break;
         }
@@ -2497,6 +2511,7 @@ void BCStateTran::processData() {
         }
 
         LOG_DEBUG(getLogger(), "After putBlockAsync:" << KVLOG(ctx.blockId));
+        blockDataPool_.free(std::move(ctx.blockData));
         dstPutBlockContexes_.pop_front();  // free memory
         LOG_TRACE(getLogger(), KVLOG(dstPutBlockContexes_.size()));
         ConcordAssertGT(nextCommittedBlockId_, 0);
