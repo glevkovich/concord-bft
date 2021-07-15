@@ -2433,7 +2433,7 @@ void BCStateTran::processData() {
       LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
       {
         TimeRecorder scoped_timer(*histograms_.dst_put_block_duration);
-        ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
+        ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize, lastBlock));
       }
       if (!lastBlock) {
         putBlocksStTempDT_.pause();
