@@ -511,6 +511,7 @@ std::future<bool> Replica::getBlockAsync(uint64_t blockId, char *outBlock, uint3
         bool result = false;
         auto start = std::chrono::steady_clock::now();
         *outBlockSize = 0;
+        LOG_DEBUG(logger, "Job Started: " << KVLOG(blockId));
 
         // getBlock will throw exception if block doesn't exist
         try {
@@ -518,15 +519,6 @@ std::future<bool> Replica::getBlockAsync(uint64_t blockId, char *outBlock, uint3
         } catch (NotFoundException &ex) {
           *outBlockSize = 0;
           LOG_ERROR(logger, "Block not found:" << KVLOG(blockId));
-          return false;
-        } catch (const std::runtime_error &ex) {
-          LOG_ERROR(logger, "runtime_error exception:" << ex.what());
-          return false;
-        } catch (const std::exception &ex) {
-          LOG_ERROR(logger, "exception:" << ex.what());
-          return false;
-        } catch (...) {
-          LOG_ERROR(logger, "Uknown exception!");
           return false;
         }
         if (result) ConcordAssertGT(*outBlockSize, 0);
@@ -578,6 +570,14 @@ bool Replica::getPrevDigestFromBlock(BlockId blockId, StateTransferDigest *outPr
   static_assert(sizeof(StateTransferDigest) == BLOCK_DIGEST_SIZE);
   std::memcpy(outPrevBlockDigest, parent_digest->data(), BLOCK_DIGEST_SIZE);
   return true;
+}
+
+void Replica::getPrevDigestFromBlock(const char *blockData,
+                                     const uint32_t blockSize,
+                                     StateTransferDigest *outPrevBlockDigest) {
+  auto view = std::string_view{blockData, blockSize};
+  const auto rawBlock = categorization::RawBlock::deserialize(view);
+  std::memcpy(outPrevBlockDigest, rawBlock.data.parent_digest.data(), BLOCK_DIGEST_SIZE);
 }
 
 bool Replica::getPrevDigestFromObjectStoreBlock(uint64_t blockId,
