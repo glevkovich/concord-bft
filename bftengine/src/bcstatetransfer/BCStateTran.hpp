@@ -361,10 +361,8 @@ class BCStateTran : public IStateTransfer {
 
   using BlockIOData = std::shared_ptr<char[]>;
   struct BlockIOContext {
-    BlockIOContext(uint16_t i) : index(i), blockId(0), actualBlockSize() {};
-    BlockIOContext() = delete;
+    BlockIOContext() : blockId(0), actualBlockSize(0){};
 
-    const uint16_t index;  // TODO - if in unordered container - rename to ctxId.
     uint64_t blockId;
     uint32_t actualBlockSize;
     BlockIOData blockData;
@@ -396,7 +394,7 @@ class BCStateTran : public IStateTransfer {
       return ret;
     }
 
-    void free(BlockIOData &&element) {
+    void free(BlockIOData&& element) {
       if (elementsQ_.size() == maxNumElements_) {
         throw std::runtime_error("All elements have already returned!");
       }

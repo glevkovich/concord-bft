@@ -253,7 +253,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
   LOG_INFO(getLogger(), "Creating BCStateTran object: " << config_);
 
   for (size_t i{0}; i < config_.maxNumberOfChunksInBatch; ++i) {
-    srcGetBlockContextes_.emplace_back(BlockIOContext(i));
+    srcGetBlockContextes_.emplace_back(BlockIOContext());
   }
   buffer_ = new char[maxItemSize_]{};
   LOG_INFO(getLogger(),
@@ -1362,9 +1362,6 @@ uint16_t BCStateTran::asyncGetBlocksConcurrent(uint64_t nextBlockId,
 
   LOG_DEBUG(getLogger(), KVLOG(nextBlockId, firstRequiredBlock, numBlocks, startContextIndex));
   for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < startContextIndex + numBlocks); --i, ++j) {
-    if (j > 0){
-      LOG_INFO(getLogger(), "xxx use count 1" << KVLOG(srcGetBlockContextes_[j-1].index, srcGetBlockContextes_[j-1].blockId, srcGetBlockContextes_[j-1].blockData.use_count()));
-    }
     auto &ctx = srcGetBlockContextes_[j];
     // start the job ASAP, return result to on-stack future
     if (ctx.future.valid()) {
@@ -1373,7 +1370,7 @@ uint16_t BCStateTran::asyncGetBlocksConcurrent(uint64_t nextBlockId,
       // research if wait time > 0.
       try {
         LOG_DEBUG(getLogger(),
-                  "Waiting for previous thread to finish job on context " << KVLOG(ctx.blockId, ctx.index));
+                  "Waiting for previous thread to finish job on context " << KVLOG(ctx.blockId));
         ctx.future.get();
       } catch (...) {
         // ignore and continue, this job is irrlevant
@@ -1381,11 +1378,9 @@ uint16_t BCStateTran::asyncGetBlocksConcurrent(uint64_t nextBlockId,
       }
     } else {
       ctx.blockData = blockDataPool_.alloc();
-      LOG_INFO(getLogger(), "xxx allocated after aloc :" << KVLOG((uintptr_t)ctx.blockData.get()));
     }
     ctx.blockId = i;
     ctx.future = as_->getBlockAsync(ctx.blockId, ctx.blockData.get(), &ctx.actualBlockSize);
-    LOG_INFO(getLogger(), "xxx use count 2" << KVLOG(ctx.index, ctx.blockId, ctx.blockData.use_count()));
   }
 
   return j;
@@ -1489,7 +1484,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
       waitFutureDuration.start();
       try {
         if (!ctx.future.get()) {
-          LOG_ERROR(getLogger(), "Block not found in storage, abort batch:" << KVLOG(ctx.index, ctx.blockId));
+          LOG_ERROR(getLogger(), "Block not found in storage, abort batch:" << KVLOG(ctx.blockId));
           rejectFetchingMsg();
           return false;
         }
@@ -2473,8 +2468,7 @@ void BCStateTran::processData() {
         blocks_collected_.pause();
         bytes_collected_.pause();
       } else if (!blockDataPool_.empty()) {
-        // BlockIOContext ctx(0, config_.maxBlockSize);  // TODO - index?
-        BlockIOContext ctx(0);  // TODO - index?
+        BlockIOContext ctx;
         ctx.blockId = nextRequiredBlock_;
         ctx.actualBlockSize = actualBlockSize;
         ctx.blockData = blockDataPool_.alloc();
@@ -2598,7 +2592,6 @@ void BCStateTran::processData() {
       ConcordAssertGT(cp.checkpointNum, g.txn()->getLastStoredCheckpoint());
 
       g.txn()->setCheckpointDesc(cp.checkpointNum, cp);
-      LOG_TRACE(getLogger(), "xxx" << KVLOG(cp.checkpointNum, cp.lastBlock));
       g.txn()->deleteCheckpointBeingFetched();
 
       deleteOldCheckpoints(cp.checkpointNum, g.txn());
