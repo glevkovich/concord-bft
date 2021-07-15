@@ -365,7 +365,6 @@ void BCStateTran::startRunning(IReplicaForStateTransfer *r) {
   ConcordAssertNE(r, nullptr);
   running_ = true;
   replicaForStateTransfer_ = r;
-  replicaForStateTransfer_->changeStateTransferTimerPeriod(config_.refreshTimerMs);
 }
 
 void BCStateTran::stopRunning() {
@@ -406,8 +405,18 @@ void BCStateTran::stopRunning() {
   metrics_.next_required_block_.Get().Set(0);
   digestOfNextRequiredBlock.makeZero();
 
-  for (auto i : pendingItemDataMsgs) replicaForStateTransfer_->freeStateTransferMsg(reinterpret_cast<char *>(i));
-
+  for (auto i : pendingItemDataMsgs) {
+    replicaForStateTransfer_->freeStateTransferMsg(reinterpret_cast<char *>(i));
+  }
+  for (auto &ctx : srcGetBlockContextes_) {
+    if (ctx.future.valid()) ctx.future.get();
+    if (ctx.blockData) blockDataPool_.free(std::move(ctx.blockData));
+  }
+  for (auto &ctx : dstPutBlockContexes_) {
+    if (ctx.future.valid()) ctx.future.get();
+    if (ctx.blockData) blockDataPool_.free(std::move(ctx.blockData));
+  }
+  dstPutBlockContexes_.clear();
   pendingItemDataMsgs.clear();
   totalSizeOfPendingItemDataMsgs = 0;
   replicaForStateTransfer_ = nullptr;
@@ -692,7 +701,6 @@ void BCStateTran::onTimerImp() {
     last_metrics_dump_time_ = currTimeForDumping;
     LOG_INFO(getLogger(), "--BCStateTransfer metrics dump--" + metrics_component_.ToJson());
   }
-  auto currTime = getMonotonicTimeMilli();
 
   // take a snapshot and log after time passed is approx x2 of fetchRetransmissionTimeoutMs
   if (sourceFlag_ &&
@@ -705,7 +713,10 @@ void BCStateTran::onTimerImp() {
     sourceFlag_ = false;
     sourceSnapshotCounter_ = 0;
   }
+
+  // Retransmit AskForCheckpointSummariesMsg if needed
   if (fs == FetchingState::GettingCheckpointSummaries) {
+    auto currTime = getMonotonicTimeMilli();
     if ((currTime - lastTimeSentAskForCheckpointSummariesMsg) > config_.checkpointSummariesRetransmissionTimeoutMs) {
       LOG_DEBUG(getLogger(),
                 KVLOG(retransmissionNumberOfAskForCheckpointSummariesMsg, kResetCount_AskForCheckpointSummaries));
@@ -714,6 +725,7 @@ void BCStateTran::onTimerImp() {
 
       sendAskForCheckpointSummariesMsg();
     }
+    // process data if fetching
   } else if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages) {
     processData();
   }
@@ -1004,6 +1016,7 @@ void BCStateTran::onFetchingStateChange(FetchingState newFetchingState) {
            "FetchingState changed from " << stateName(lastFetchingState_) << " to " << stateName(newFetchingState));
   switch (lastFetchingState_) {
     case FetchingState::NotFetching:
+      replicaForStateTransfer_->changeStateTransferTimerPeriod(config_.refreshTimerMs);
       cycleDT_.start();
       break;
     case FetchingState::GettingCheckpointSummaries:
@@ -1017,9 +1030,12 @@ void BCStateTran::onFetchingStateChange(FetchingState newFetchingState) {
       break;
   }
   switch (newFetchingState) {
-    case FetchingState::NotFetching:
+    case FetchingState::NotFetching: {
+      const uint32_t defaultTimeout = 5000;
+      replicaForStateTransfer_->changeStateTransferTimerPeriod(defaultTimeout);
       cycleDT_.pause();
       break;
+    }
     case FetchingState::GettingCheckpointSummaries:
       gettingCheckpointSummariesDT_.start();
       break;
@@ -1369,8 +1385,7 @@ uint16_t BCStateTran::asyncGetBlocksConcurrent(uint64_t nextBlockId,
       // TODO(GL)- get() can be optimize by waiting 0 time and continue calling next jobs which might have finished. 1st
       // research if wait time > 0.
       try {
-        LOG_DEBUG(getLogger(),
-                  "Waiting for previous thread to finish job on context " << KVLOG(ctx.blockId));
+        LOG_DEBUG(getLogger(), "Waiting for previous thread to finish job on context " << KVLOG(ctx.blockId));
         ctx.future.get();
       } catch (...) {
         // ignore and continue, this job is irrlevant
@@ -2016,7 +2031,9 @@ void BCStateTran::verifyEmptyInfoAboutGettingCheckpointSummary() {
 void BCStateTran::clearAllPendingItemsData() {
   LOG_DEBUG(getLogger(), "");
 
-  for (auto i : pendingItemDataMsgs) replicaForStateTransfer_->freeStateTransferMsg(reinterpret_cast<char *>(i));
+  for (auto i : pendingItemDataMsgs) {
+    replicaForStateTransfer_->freeStateTransferMsg(reinterpret_cast<char *>(i));
+  }
 
   pendingItemDataMsgs.clear();
   totalSizeOfPendingItemDataMsgs = 0;
@@ -2231,6 +2248,7 @@ void BCStateTran::EnterGettingCheckpointSummariesState() {
   sourceSelector_.reset();
   metrics_.current_source_replica_.Get().Set(sourceSelector_.currentReplica());
 
+  asyncProcessCommitResults(false, false);
   nextRequiredBlock_ = 0;
   LOG_TRACE(getLogger(), KVLOG(nextRequiredBlock_));  // TODO - remove
   nextCommittedBlockId_ = 0;
@@ -2320,6 +2338,41 @@ std::string BCStateTran::logsForCollectingStatus(const uint64_t firstRequiredBlo
 
   oss << concordUtils::kContainerToJson(result);
   return oss.str().c_str();
+}
+
+void BCStateTran::asyncProcessCommitResults(bool lastBlock, bool asyncFlag) {
+  ConcordAssertEQ(getFetchingState(), FetchingState::GettingMissingBlocks);
+  ConcordAssertGT(nextCommittedBlockId_, 0);
+  // In the very rare case of exception, we will just fetch the committed blocks (to temproary chain) again
+  // Put an existing block is completely valid operation if the block is identical
+  if (dstPutBlockContexes_.empty()) return;
+  DataStoreTransaction::Guard g(psd_->beginTransaction());
+  while (!dstPutBlockContexes_.empty()) {
+    auto &ctx = dstPutBlockContexes_.front();
+    ConcordAssert(ctx.future.valid());
+    if (asyncFlag && !lastBlock && ctx.future.wait_for(std::chrono::nanoseconds(0)) != std::future_status::ready) {
+      // TODO - trigger a timer 1ms if handoff is empty
+      break;
+    }
+    ConcordAssertEQ(ctx.blockId, nextCommittedBlockId_);
+    try {
+      ConcordAssertEQ(ctx.future.get(), true);
+    } catch (const std::exception &e) {
+      LOG_FATAL(getLogger(), e.what());
+      ConcordAssert(false);
+    } catch (...) {
+      LOG_FATAL(getLogger(), "Unknown exception!");
+      ConcordAssert(false);
+    }
+
+    LOG_DEBUG(getLogger(), "After putBlockAsync:" << KVLOG(ctx.blockId));
+    blockDataPool_.free(std::move(ctx.blockData));
+    dstPutBlockContexes_.pop_front();  // free memory
+    LOG_TRACE(getLogger(), KVLOG(dstPutBlockContexes_.size()));
+    ConcordAssertGT(nextCommittedBlockId_, 0);
+    --nextCommittedBlockId_;
+  }
+  g.txn()->setLastRequiredBlock(nextCommittedBlockId_);
 }
 
 void BCStateTran::processData() {
@@ -2444,13 +2497,12 @@ void BCStateTran::processData() {
     // if we have a new block
     //////////////////////////////////////////////////////////////////////////
     const uint64_t firstRequiredBlock = psd_->getFirstRequiredBlock();
+    bool lastBlock = isGettingBlocks && (firstRequiredBlock >= nextRequiredBlock_);
     if (!lastCollectedBlockId_) lastCollectedBlockId_ = firstRequiredBlock;
     if (newBlockIsValid && isGettingBlocks) {
-      DataStoreTransaction::Guard g(psd_->beginTransaction());
       sourceSelector_.setSourceSelectionTime(currTime);
 
       ConcordAssertAND(lastChunkInRequiredBlock >= 1, actualBlockSize > 0);
-      bool lastBlock = (firstRequiredBlock >= nextRequiredBlock_);
 
       // Report collecting status for every block collected. Log entry is created every fixed window
       // getMissingBlocksSummaryWindowSize If lastBlock is true: summarize the whole cycle without including "commit
@@ -2477,37 +2529,8 @@ void BCStateTran::processData() {
         dstPutBlockContexes_.push_back(std::move(ctx));
         LOG_TRACE(getLogger(), KVLOG(dstPutBlockContexes_.size()));
       }
-      while (!dstPutBlockContexes_.empty()) {
-        auto &ctx = dstPutBlockContexes_.front();
-        ConcordAssert(ctx.future.valid());
-        if (!lastBlock && ctx.future.wait_for(std::chrono::nanoseconds(0)) != std::future_status::ready) {
-          // TODO - trigger a timer 1ms if handoff is empty
-          break;
-        }
-        ConcordAssertEQ(ctx.blockId, nextCommittedBlockId_);
-        try {
-          ConcordAssertEQ(ctx.future.get(), true);
-        } catch (const std::exception &e) {
-          LOG_FATAL(getLogger(), e.what());
-          ConcordAssert(false);
-        } catch (...) {
-          LOG_FATAL(getLogger(), "Unknown exception!");
-          ConcordAssert(false);
-        }
-
-        LOG_DEBUG(getLogger(), "After putBlockAsync:" << KVLOG(ctx.blockId));
-        blockDataPool_.free(std::move(ctx.blockData));
-        dstPutBlockContexes_.pop_front();  // free memory
-        LOG_TRACE(getLogger(), KVLOG(dstPutBlockContexes_.size()));
-        ConcordAssertGT(nextCommittedBlockId_, 0);
-        --nextCommittedBlockId_;
-        g.txn()->setLastRequiredBlock(nextCommittedBlockId_);
-      }
+      asyncProcessCommitResults(lastBlock, true);
       if (!lastBlock) {
-        // putBlocksStTempDT_.pause();
-        // betweenPutBlocksStTempDT_.start();
-        // as_->getPrevDigestFromBlock(nextRequiredBlock_,
-        //                            reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
         as_->getPrevDigestFromBlock(
             buffer_, actualBlockSize, reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
         ConcordAssertGT(nextRequiredBlock_, 0);
@@ -2523,7 +2546,9 @@ void BCStateTran::processData() {
         }
       } else {
         // this is the last block we need
+        DataStoreTransaction::Guard g(psd_->beginTransaction());
         ConcordAssertEQ(nextCommittedBlockId_, nextRequiredBlock_);
+        ConcordAssert(dstPutBlockContexes_.empty());
         ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize, lastBlock));
         LOG_DEBUG(getLogger(), "After putBlock (last block):" << KVLOG(nextRequiredBlock_));
         // report collecting status (without vblock) into log
@@ -2580,6 +2605,7 @@ void BCStateTran::processData() {
       ConcordAssertEQ(g.txn()->getFirstRequiredBlock(), 0);
       ConcordAssertEQ(g.txn()->getLastRequiredBlock(), 0);
       ConcordAssertGT(cp.checkpointNum, g.txn()->getLastStoredCheckpoint());
+      ConcordAssert(dstPutBlockContexes_.empty());
 
       g.txn()->setCheckpointDesc(cp.checkpointNum, cp);
       g.txn()->deleteCheckpointBeingFetched();
@@ -2621,6 +2647,7 @@ void BCStateTran::processData() {
     // if we don't have new full block/vblock (but we did not detect a problem)
     //////////////////////////////////////////////////////////////////////////
     else if (!badDataFromCurrentSourceReplica) {
+      asyncProcessCommitResults(lastBlock, true);
       bool retransmissionTimeoutExpired = sourceSelector_.retransmissionTimeoutExpired(currTime);
       if (newSourceReplica || retransmissionTimeoutExpired) {
         if (isGettingBlocks) {

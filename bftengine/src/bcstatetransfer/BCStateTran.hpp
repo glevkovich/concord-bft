@@ -402,7 +402,7 @@ class BCStateTran : public IStateTransfer {
         throw std::runtime_error(
             "Trying to free unrocognized element (address was not allocated by this pool object)!");
       }
-      elementsQ_.push_back(element);
+      elementsQ_.push_back(std::move(element));
     }
 
    private:
@@ -421,6 +421,10 @@ class BCStateTran : public IStateTransfer {
                                     uint64_t firstRequiredBlock,
                                     uint16_t numBlocks,
                                     size_t startContextIndex = 0);
+
+  // lastBlock is true if we put the oldest block (firstRequiredBlock)
+  // asyncFlag is true if caller would like to exit if the next future is not ready (job not ended yet)
+  void asyncProcessCommitResults(bool lastBlock, bool asyncFlag);
   ///////////////////////////////////////////////////////////////////////////
   // Metrics
   ///////////////////////////////////////////////////////////////////////////
