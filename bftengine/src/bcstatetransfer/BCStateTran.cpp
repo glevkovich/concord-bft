@@ -2340,18 +2340,27 @@ std::string BCStateTran::logsForCollectingStatus(const uint64_t firstRequiredBlo
   return oss.str().c_str();
 }
 
-void BCStateTran::asyncProcessCommitResults(bool lastBlock, bool asyncFlag) {
+bool BCStateTran::asyncProcessCommitResults(bool lastBlock, bool breakIfFutureNoReady) {
+  bool doneProcesssing = true;
   ConcordAssertEQ(getFetchingState(), FetchingState::GettingMissingBlocks);
   ConcordAssertGT(nextCommittedBlockId_, 0);
+
   // In the very rare case of exception, we will just fetch the committed blocks (to temproary chain) again
   // Put an existing block is completely valid operation if the block is identical
-  if (dstPutBlockContexes_.empty()) return;
+  if (dstPutBlockContexes_.empty()) {
+    return doneProcesssing;
+  }
+
   DataStoreTransaction::Guard g(psd_->beginTransaction());
   while (!dstPutBlockContexes_.empty()) {
     auto &ctx = dstPutBlockContexes_.front();
     ConcordAssert(ctx.future.valid());
-    if (asyncFlag && !lastBlock && ctx.future.wait_for(std::chrono::nanoseconds(0)) != std::future_status::ready) {
-      // TODO - trigger a timer 1ms if handoff is empty
+    if (breakIfFutureNoReady && !lastBlock &&
+        ctx.future.wait_for(std::chrono::nanoseconds(0)) != std::future_status::ready) {
+      doneProcesssing = false;
+      // processing not done. We must call asyncProcessCommitResults in a short time to finish commit
+      // replicaForStateTransfer_->addOneShotTimer(processCommitsTimeout, processCommitsHandler_);
+      replicaForStateTransfer_->addOneShotTimer(processCommitsTimeoutMilli_);
       break;
     }
     ConcordAssertEQ(ctx.blockId, nextCommittedBlockId_);
@@ -2373,6 +2382,7 @@ void BCStateTran::asyncProcessCommitResults(bool lastBlock, bool asyncFlag) {
     --nextCommittedBlockId_;
   }
   g.txn()->setLastRequiredBlock(nextCommittedBlockId_);
+  return doneProcesssing;
 }
 
 void BCStateTran::processData() {
@@ -2647,7 +2657,7 @@ void BCStateTran::processData() {
     // if we don't have new full block/vblock (but we did not detect a problem)
     //////////////////////////////////////////////////////////////////////////
     else if (!badDataFromCurrentSourceReplica) {
-      asyncProcessCommitResults(lastBlock, true);
+      if (isGettingBlocks) asyncProcessCommitResults(lastBlock, true);
       bool retransmissionTimeoutExpired = sourceSelector_.retransmissionTimeoutExpired(currTime);
       if (newSourceReplica || retransmissionTimeoutExpired) {
         if (isGettingBlocks) {

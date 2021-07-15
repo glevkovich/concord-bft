@@ -115,4 +115,10 @@ void ReplicaForStateTransfer::changeStateTransferTimerPeriod(uint32_t timerPerio
   metric_state_transfer_timer_.Get().Set(timerPeriodMilli);
 }
 
+Timers::Handle ReplicaForStateTransfer::addOneShotTimer(uint32_t timeoutMilli) {
+  return timers_.add(std::chrono::milliseconds(timeoutMilli),
+                     concordUtil::Timers::Timer::ONESHOT,
+                     [this](concordUtil::Timers::Handle h) { stateTransfer->onTimer(); });
+}
+
 }  // namespace bftEngine::impl
