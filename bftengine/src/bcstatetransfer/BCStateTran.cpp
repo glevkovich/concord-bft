@@ -252,9 +252,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
 
   LOG_INFO(getLogger(), "Creating BCStateTran object: " << config_);
 
-  for (size_t i{0}; i < config_.maxNumberOfChunksInBatch; ++i) {
-    srcGetBlockContextes_.emplace_back(BlockIOContext());
-  }
+  srcGetBlockContextes_.resize(config_.maxNumberOfChunksInBatch);
   buffer_ = new char[maxItemSize_]{};
   LOG_INFO(getLogger(),
            "Allocated " << config_.maxNumberOfChunksInBatch + 1 << " buffers, " << maxItemSize_
