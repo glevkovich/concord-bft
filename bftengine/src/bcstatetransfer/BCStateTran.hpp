@@ -372,6 +372,13 @@ class BCStateTran : public IStateTransfer {
                                     uint64_t firstRequiredBlock,
                                     uint16_t numBlocks,
                                     size_t startContextIndex = 0);
+
+  struct PutBlockContext {
+    uint64_t blockId;
+    std::future<bool> future;
+  };
+
+  std::deque<PutBlockContext> dstPutBlockContexes_;
   ///////////////////////////////////////////////////////////////////////////
   // Metrics
   ///////////////////////////////////////////////////////////////////////////
@@ -478,6 +485,7 @@ class BCStateTran : public IStateTransfer {
   DurationTracker<std::chrono::milliseconds> gettingCheckpointSummariesDT_;
   DurationTracker<std::chrono::milliseconds> gettingMissingBlocksDT_;
   DurationTracker<std::chrono::milliseconds> gettingMissingResPagesDT_;
+  // TODo - remove?
   DurationTracker<std::chrono::milliseconds> betweenPutBlocksStTempDT_;  // TODO(GL) - remove later when unneeded
   DurationTracker<std::chrono::milliseconds> putBlocksStTempDT_;         // TODO(GL) - remove later when unneeded
   FetchingState lastFetchingState_;
@@ -513,7 +521,7 @@ class BCStateTran : public IStateTransfer {
                                        {
                                            dst_handle_ItemData_msg,
                                            dst_time_between_sendFetchBlocksMsg,
-                                           dst_put_block_duration,
+                                           // dst_put_block_duration,
                                            dst_digest_calc_duration,
                                        });
       // source component
@@ -537,8 +545,8 @@ class BCStateTran : public IStateTransfer {
         dst_handle_ItemData_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
         dst_time_between_sendFetchBlocksMsg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    DEFINE_SHARED_RECORDER(
-        dst_put_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    // DEFINE_SHARED_RECORDER(
+    //    dst_put_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
         dst_digest_calc_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     // source
