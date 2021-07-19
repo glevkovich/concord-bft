@@ -151,7 +151,7 @@ class BCStateTran : public IStateTransfer {
   IReplicaForStateTransfer* replicaForStateTransfer_ = nullptr;
 
   // TODO - transform to smart pointer
-  char* buffer_;  // temporary buffer
+  std::unique_ptr<char[]> buffer_;  // temporary buffer
 
   // random generator
   std::random_device randomDevice_;
