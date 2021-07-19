@@ -405,7 +405,15 @@ class BCStateTran : public IStateTransfer {
         throw std::runtime_error(
             "Trying to free unrocognized element (address was not allocated by this pool object)!");
       }
-      if (element->future.valid()) element->future.get();
+      if (element->future.valid()) {
+        try {
+          LOG_DEBUG(getLogger(), "Waiting for previous thread to finish job on context " << KVLOG(element->blockId));
+          element->future.get();
+        } catch (...) {
+          // ignore and continue, this job is irrlevant
+          LOG_WARN(getLogger(), "Exception on irrelevant job, ignoring..");
+        }
+      }
       auto ret = allocatedQ_.front();
       allocatedQ_.pop_front();
       freeQ_.push_back(std::move(element));
@@ -423,7 +431,7 @@ class BCStateTran : public IStateTransfer {
   std::deque<BlockIOContextPtr> ioContexes_;
 
   // returns number of jobs pushed to queue
-  uint16_t asyncGetBlocksConcurrent(uint64_t nextBlockId,
+  uint16_t getBlocksConcurrentAsync(uint64_t nextBlockId,
                                     uint64_t firstRequiredBlock,
                                     uint16_t numBlocks,
                                     size_t startContextIndex = 0);
@@ -432,7 +440,7 @@ class BCStateTran : public IStateTransfer {
   // breakIfFutureNoReady: is true if caller would like to exit if the next future is not ready (job not ended yet).
   //    In that case, a ONESHOT timer is invoked to check the future again soon.
   // return: true if done procesing all futures, and false if the front one was not std::future_status::ready
-  bool asyncProcessCommitResults(bool lastBlock, bool breakIfFutureNoReady);
+  bool processCommitResultsAsync(bool lastBlock, bool breakIfFutureNoReady);
   ///////////////////////////////////////////////////////////////////////////
   // Metrics
   ///////////////////////////////////////////////////////////////////////////

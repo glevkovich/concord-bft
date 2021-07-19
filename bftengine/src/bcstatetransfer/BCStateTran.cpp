@@ -1006,7 +1006,6 @@ void BCStateTran::onFetchingStateChange(FetchingState newFetchingState) {
            "FetchingState changed from " << stateName(lastFetchingState_) << " to " << stateName(newFetchingState));
   switch (lastFetchingState_) {
     case FetchingState::NotFetching:
-      // replicaForStateTransfer_->changeStateTransferTimerPeriod(config_.refreshTimerMs);
       cycleDT_.start();
       break;
     case FetchingState::GettingCheckpointSummaries:
@@ -1021,8 +1020,6 @@ void BCStateTran::onFetchingStateChange(FetchingState newFetchingState) {
   }
   switch (newFetchingState) {
     case FetchingState::NotFetching: {
-      // const uint32_t defaultTimeout = 5000;
-      // replicaForStateTransfer_->changeStateTransferTimerPeriod(defaultTimeout);
       cycleDT_.pause();
       break;
     }
@@ -1345,6 +1342,7 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
     if (newCheckpoint.lastBlock > lastReachableBlockNum) {
       // fetch blocks
       g.txn()->setFirstRequiredBlock(lastReachableBlockNum + 1);
+      lastCollectedBlockId_ = lastReachableBlockNum + 1;
       g.txn()->setLastRequiredBlock(newCheckpoint.lastBlock);
     } else {
       // fetch reserved pages (vblock)
@@ -1362,7 +1360,7 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
 }
 
 // TODO context index should be transformed here
-uint16_t BCStateTran::asyncGetBlocksConcurrent(uint64_t nextBlockId,
+uint16_t BCStateTran::getBlocksConcurrentAsync(uint64_t nextBlockId,
                                                uint64_t firstRequiredBlock,
                                                uint16_t numBlocks,
                                                size_t startContextIndex) {
@@ -1372,22 +1370,6 @@ uint16_t BCStateTran::asyncGetBlocksConcurrent(uint64_t nextBlockId,
   LOG_DEBUG(getLogger(), KVLOG(nextBlockId, firstRequiredBlock, numBlocks, startContextIndex));
   for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < startContextIndex + numBlocks); --i, ++j) {
     auto ctx = ioPool_.alloc();
-    // start the job ASAP, return result to on-stack future
-    // if (ctx.future.valid()) {
-    //   // wait for previous thread to finish - we must call it explicitly here, can't relay on dtor
-    //   // TODO(GL)- get() can be optimize by waiting 0 time and continue calling next jobs which might have finished.
-    //   1st
-    //   // research if wait time > 0.
-    //   try {
-    //     LOG_DEBUG(getLogger(), "Waiting for previous thread to finish job on context " << KVLOG(ctx.blockId));
-    //     ctx.future.get();
-    //   } catch (...) {
-    //     // ignore and continue, this job is irrlevant
-    //     LOG_WARN(getLogger(), "Exception on irrelevant job, ignoring..");
-    //   }
-    // } else {
-    //   ctx.blockData = ioPool_.alloc();
-    // }
     ctx->blockId = i;
     ctx->future = as_->getBlockAsync(ctx->blockId, ctx->blockData.get(), &ctx->actualBlockSize);
     ioContexes_.push_back(std::move(ctx));
@@ -1464,17 +1446,17 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   if (!config_.enableSourceBlocksPreFetch || ioContexes_.empty() || (ioContexes_.front()->blockId != nextBlockId)) {
     if (ioContexes_.empty()) {
       LOG_INFO(getLogger(),
-               "Call asyncGetBlocksConcurrent: source blocks prefetch disabled (first batch or retransmission): "
+               "Call getBlocksConcurrentAsync: source blocks prefetch disabled (first batch or retransmission): "
                    << config_.enableSourceBlocksPreFetch);
     } else {
       LOG_INFO(getLogger(),
-               "Call asyncGetBlocksConcurrent: source blocks prefetch disabled (first batch or retransmission): "
+               "Call getBlocksConcurrentAsync: source blocks prefetch disabled (first batch or retransmission): "
                    << KVLOG(config_.enableSourceBlocksPreFetch, ioContexes_.front()->blockId, nextBlockId));
       for (auto &ctx : ioContexes_) ioPool_.free(ctx);  // TODO - function
       ioContexes_.clear();
     }
 
-    asyncGetBlocksConcurrent(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
+    getBlocksConcurrentAsync(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
   }
 
   // Fetch blocks and send all chunks for the batch. Also, while looping start to pre-fetch next batch
@@ -1595,7 +1577,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
 
       // this context is usage us done. We can now use it to prefetch future batch block
       if (preFetchBlockId > 0) {
-        asyncGetBlocksConcurrent(preFetchBlockId, m->firstRequiredBlock, 1, ctxIndex);
+        getBlocksConcurrentAsync(preFetchBlockId, m->firstRequiredBlock, 1, ctxIndex);
         --preFetchBlockId;
       }
       ++ctxIndex;
@@ -1608,7 +1590,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   src_send_batch_duration_rec_.end();
 
   if (preFetchBlockId > 0) {
-    asyncGetBlocksConcurrent(preFetchBlockId, m->firstRequiredBlock, 1, ctxIndex);
+    getBlocksConcurrentAsync(preFetchBlockId, m->firstRequiredBlock, 1, ctxIndex);
   }
   return false;
 }
@@ -2258,7 +2240,7 @@ void BCStateTran::EnterGettingCheckpointSummariesState() {
   sourceSelector_.reset();
   metrics_.current_source_replica_.Get().Set(sourceSelector_.currentReplica());
 
-  asyncProcessCommitResults(false, false);
+  processCommitResultsAsync(false, false);
   nextRequiredBlock_ = 0;
   nextCommittedBlockId_ = 0;
   digestOfNextRequiredBlock.makeZero();
@@ -2349,7 +2331,7 @@ std::string BCStateTran::logsForCollectingStatus(const uint64_t firstRequiredBlo
   return oss.str().c_str();
 }
 
-bool BCStateTran::asyncProcessCommitResults(bool lastBlock, bool breakIfFutureNoReady) {
+bool BCStateTran::processCommitResultsAsync(bool lastBlock, bool breakIfFutureNoReady) {
   // Comment on committing asynchronously:
   // In the very rare case of exception, we will just fetch the committed blocks (to temproary chain) again
   // Put an existing block is completely valid operation if the block is identical
@@ -2367,7 +2349,7 @@ bool BCStateTran::asyncProcessCommitResults(bool lastBlock, bool breakIfFutureNo
     if (breakIfFutureNoReady && !lastBlock &&
         (ctx->future.wait_for(std::chrono::nanoseconds(0)) != std::future_status::ready)) {
       doneProcesssing = false;
-      // processing not done. We must call asyncProcessCommitResults in a short time to finish commit
+      // processing not done. We must call processCommitResultsAsync in a short time to finish commit
       // replicaForStateTransfer_->addOneShotTimer(processCommitsTimeout, processCommitsHandler_);
       replicaForStateTransfer_->addOneShotTimer(processCommitsTimeoutMilli_);
       break;
@@ -2450,6 +2432,7 @@ void BCStateTran::processData() {
       } else {
         nextRequiredBlock_ = psd_->getLastRequiredBlock();
         nextCommittedBlockId_ = nextRequiredBlock_;
+        firstCollectedBlockId_ = nextRequiredBlock_;
 
         // if this is the last block in this checkpoint
         if (cp.lastBlock == nextRequiredBlock_) {
@@ -2460,7 +2443,6 @@ void BCStateTran::processData() {
           as_->getPrevDigestFromBlock(nextRequiredBlock_ + 1,
                                       reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
         }
-        if (!firstCollectedBlockId_) firstCollectedBlockId_ = nextRequiredBlock_;
       }
     }
 
@@ -2513,7 +2495,6 @@ void BCStateTran::processData() {
     //////////////////////////////////////////////////////////////////////////
     const uint64_t firstRequiredBlock = psd_->getFirstRequiredBlock();
     bool lastBlock = isGettingBlocks && (firstRequiredBlock >= nextRequiredBlock_);
-    if (!lastCollectedBlockId_) lastCollectedBlockId_ = firstRequiredBlock;
     if (newBlockIsValid && isGettingBlocks) {
       sourceSelector_.setSourceSelectionTime(currTime);
 
@@ -2545,7 +2526,7 @@ void BCStateTran::processData() {
       }
       // If there are no more free elements in ioPool_, for simplicity, wait for at least for one to get free
       // (this is very rare)
-      asyncProcessCommitResults(lastBlock, ioPool_.numFreeElements() > 0);
+      processCommitResultsAsync(lastBlock, ioPool_.numFreeElements() > 0);
       if (!lastBlock) {
         as_->getPrevDigestFromBlock(
             buffer_, actualBlockSize, reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
@@ -2661,7 +2642,7 @@ void BCStateTran::processData() {
     // if we don't have new full block/vblock (but we did not detect a problem)
     //////////////////////////////////////////////////////////////////////////
     else if (!badDataFromCurrentSourceReplica) {
-      if (isGettingBlocks) asyncProcessCommitResults(lastBlock, true);
+      if (isGettingBlocks) processCommitResultsAsync(lastBlock, true);
       bool retransmissionTimeoutExpired = sourceSelector_.retransmissionTimeoutExpired(currTime);
       if (newSourceReplica || retransmissionTimeoutExpired) {
         if (isGettingBlocks) {
