@@ -1424,7 +1424,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
 
   // start recording time to send a whole batch, and its size
   uint64_t batchSizeBytes = 0;
-  uint64_t batchSizeBlocks = 0;
+  uint64_t batchSizeChunks = 0;
   src_send_batch_duration_rec_.clear();
   src_send_batch_duration_rec_.start();
 
@@ -1442,7 +1442,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
       LOG_INFO(getLogger(),
                "Call getBlocksConcurrentAsync: source blocks prefetch disabled (first batch or retransmission): "
                    << KVLOG(config_.enableSourceBlocksPreFetch, ioContexes_.front()->blockId, nextBlockId));
-      for (auto &ctx : ioContexes_) ioPool_.free(ctx);  // TODO - function
+      for (auto &ctx : ioContexes_) ioPool_.free(ctx);
       ioContexes_.clear();
     }
 
@@ -1461,8 +1461,9 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
                                              m->lastRequiredBlock,
                                              m->lastKnownChunkInLastRequiredBlock,
                                              preFetchBlockId));
+  ++sourceBatchCounter_;
   DurationTracker<std::chrono::microseconds> waitFutureDuration;  // TODO(GL) - remove when unneeded
-  bool getNextBlock = true;
+  bool getNextBlock = (nextChunk == 1);
   char *buffer = nullptr;
   uint32_t sizeOfNextBlock = 0;
   do {
@@ -1481,24 +1482,22 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
         LOG_FATAL(getLogger(), "exception:" << ex.what());
         ConcordAssert(false);
       } catch (...) {
-        LOG_FATAL(getLogger(), "Uknown exception!");
+        LOG_FATAL(getLogger(), "Unknown exception!");
         ConcordAssert(false);
       }
       ConcordAssertGT(ctx->actualBlockSize, 0);
       ConcordAssertEQ(ctx->blockId, nextBlockId);
-      sizeOfNextBlock = ctx->actualBlockSize;
-      buffer = ctx->blockData.get();
-      LOG_DEBUG(
-          getLogger(),
-          "Start sending next block: " << KVLOG(nextBlockId, sizeOfNextBlock, waitFutureDuration.totalDuration(true)));
+      LOG_DEBUG(getLogger(),
+                "Start sending next block: " << KVLOG(
+                    sourceBatchCounter_, nextBlockId, ctx->actualBlockSize, waitFutureDuration.totalDuration(true)));
       waitFutureDuration.reset();
 
       // some statistics
       histograms_.src_get_block_size_bytes->record(ctx->actualBlockSize);
-      batchSizeBytes += sizeOfNextBlock;
-      ++batchSizeBlocks;
       getNextBlock = false;
     }
+    buffer = ctx->blockData.get();
+    sizeOfNextBlock = ctx->actualBlockSize;
 
     uint32_t sizeOfLastChunk = config_.maxChunkSize;
     uint32_t numOfChunksInNextBlock = sizeOfNextBlock / config_.maxChunkSize;
@@ -1516,6 +1515,8 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
 
     SCOPED_MDC_SEQ_NUM(getSequenceNumber(replicaId, m->msgSeqNum, nextChunk, nextBlockId));
     uint32_t chunkSize = (nextChunk < numOfChunksInNextBlock) ? config_.maxChunkSize : sizeOfLastChunk;
+    batchSizeBytes += chunkSize;
+    ++batchSizeChunks;
 
     ConcordAssertGT(chunkSize, 0);
 
@@ -1553,14 +1554,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
     } else if (static_cast<uint16_t>(nextChunk + 1) <= numOfChunksInNextBlock) {
       // we still have chunks in block
       nextChunk++;
-    } else if ((nextBlockId - 1) < m->firstRequiredBlock) {
-      LOG_DEBUG(getLogger(), "Batch end - sent all relevant blocks: " << KVLOG(m->firstRequiredBlock));
-      break;
     } else {
-      // no more chunks in the block
-      --nextBlockId;
-      nextChunk = 1;
-
       ioPool_.free(ctx);
       ioContexes_.pop_front();
 
@@ -1569,17 +1563,23 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
         getBlocksConcurrentAsync(preFetchBlockId, m->firstRequiredBlock, 1);
         --preFetchBlockId;
       }
-      getNextBlock = true;
+
+      if ((nextBlockId - 1) < m->firstRequiredBlock) {
+        LOG_DEBUG(getLogger(), "Batch end - sent all relevant blocks: " << KVLOG(m->firstRequiredBlock));
+        break;
+      } else {
+        // no more chunks in the block, continue to next block
+        --nextBlockId;
+        nextChunk = 1;
+        getNextBlock = true;
+      }
     }
   } while (true);
 
   histograms_.src_send_batch_size_bytes->record(batchSizeBytes);
-  histograms_.src_send_batch_size_blocks->record(batchSizeBlocks);
+  histograms_.src_send_batch_size_chunks->record(batchSizeChunks);
   src_send_batch_duration_rec_.end();
 
-  if (preFetchBlockId > 0) {
-    getBlocksConcurrentAsync(preFetchBlockId, m->firstRequiredBlock, 1);
-  }
   return false;
 }
 
