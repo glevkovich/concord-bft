@@ -158,7 +158,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
                       config_.fetchRetransmissionTimeoutMs,
                       config_.sourceReplicaReplacementTimeoutMs,
                       ST_SRC_LOG},
-      ioPool_(config_.maxNumberOfChunksInBatch, config_.maxBlockSize),
+      ioPool_(config_.maxNumberOfChunksInBatch, config_.maxBlockSize, lastFetchingState_),
       last_metrics_dump_time_(0),
       metrics_dump_interval_in_sec_{std::chrono::seconds(config_.metricsDumpIntervalSec)},
       metrics_component_{
