@@ -100,6 +100,18 @@ class IAppState {
                         const uint32_t blockSize,
                         bool trylinkSTChainFrom = true) = 0;
 
+  // An asynchronous version for the above putBlock.
+  // For a given blockId, a job is invoked asynchronously, to put the block into storage.
+  // After job is created, this call returns immidiately with a future<bool>, while job is executed by a
+  // seperate worker thread. Before accesing buffer and size, user must call the returned future.get() to make sure that
+  // job has been done.
+  // User should 1st check the future value: if true - call succeeded, if false - call failed.
+  // All exceptions in putBlock are caught within this call implementation.
+  virtual std::future<bool> putBlockAsync(uint64_t blockId,
+                                          const char *block,
+                                          const uint32_t blockSize,
+                                          bool trylinkSTChainFrom = true) = 0;
+
   // returns the maximal block number n such that all blocks 1 <= i <= n exist.
   // if block 1 does not exist, returns 0.
   virtual uint64_t getLastReachableBlockNum() const = 0;

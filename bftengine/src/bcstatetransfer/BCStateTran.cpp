@@ -2422,19 +2422,26 @@ void BCStateTran::processData() {
       // to chain duration" and vblock. In that case last window might be less than the fixed
       // getMissingBlocksSummaryWindowSize
       reportCollectingStatus(firstRequiredBlock, actualBlockSize, lastBlock);
+
+      // Put the block. We distinguishe between last block non-last block
+      LOG_DEBUG(getLogger(),
+                "Before putBlock: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
+      betweenPutBlocksStTempDT_.pause();
       if (lastBlock) {
         commitToChainDT_.start();
         blocks_collected_.pause();
         bytes_collected_.pause();
-      } else {
-        putBlocksStTempDT_.start();
-      }
-      betweenPutBlocksStTempDT_.pause();
-      LOG_DEBUG(getLogger(), "Add block: " << std::boolalpha << KVLOG(lastBlock, nextRequiredBlock_, actualBlockSize));
-      {
-        TimeRecorder scoped_timer(*histograms_.dst_put_block_duration);
         ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize, lastBlock));
+      } else {
+        PutBlockContext ctx;
+        ctx.blockId = nextRequiredBlock_;
+        ctx.future = as_->putBlockAsync(nextRequiredBlock_, buffer_, actualBlockSize, lastBlock);
+        dstPutBlockContexes_.push_back(std::move(ctx));
       }
+      //{
+      // TimeRecorder scoped_timer(*histograms_.dst_put_block_duration);
+      // ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize, lastBlock));
+      //}
       if (!lastBlock) {
         putBlocksStTempDT_.pause();
         betweenPutBlocksStTempDT_.start();
