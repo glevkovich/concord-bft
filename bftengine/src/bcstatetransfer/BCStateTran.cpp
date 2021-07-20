@@ -2510,24 +2510,19 @@ void BCStateTran::processData() {
       LOG_DEBUG(
           getLogger(),
           "Before putBlock id " << nextRequiredBlock_ << ":" << std::boolalpha << KVLOG(lastBlock, actualBlockSize));
-      // betweenPutBlocksStTempDT_.pause();
-      if (lastBlock) {
-        commitToChainDT_.start();
-        blocks_collected_.pause();
-        bytes_collected_.pause();
-      } else if (!ioPool_.empty()) {
-        auto ctx = ioPool_.alloc();
-        ctx->blockId = nextRequiredBlock_;
-        ctx->actualBlockSize = actualBlockSize;
-        memcpy(ctx->blockData.get(), buffer_, actualBlockSize);  // TODO - this can probably be optimized
-        ctx->future = as_->putBlockAsync(nextRequiredBlock_, ctx->blockData.get(), ctx->actualBlockSize, false);
-        ioContexes_.push_back(std::move(ctx));
-        histograms_.dst_num_pending_blocks_to_commit->record(ioContexes_.size());
-      }
-      // If there are no more free elements in ioPool_, for simplicity, wait for at least for one to get free
-      // (this is very rare)
-      processCommitResultsAsync(lastBlock, ioPool_.numFreeElements() > 0);
       if (!lastBlock) {
+        // Not the last block - block are committed into ST temporary blockchain
+        if (!ioPool_.empty()) {
+          auto ctx = ioPool_.alloc();
+          ctx->blockId = nextRequiredBlock_;
+          ctx->actualBlockSize = actualBlockSize;
+          memcpy(ctx->blockData.get(), buffer_, actualBlockSize);  // TODO - this can probably be optimized
+          ctx->future = as_->putBlockAsync(nextRequiredBlock_, ctx->blockData.get(), ctx->actualBlockSize, false);
+          ioContexes_.push_back(std::move(ctx));
+          histograms_.dst_num_pending_blocks_to_commit->record(ioContexes_.size());
+        }
+        processCommitResultsAsync(lastBlock, ioPool_.numFreeElements() > 0);
+
         as_->getPrevDigestFromBlock(
             buffer_, actualBlockSize, reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
         ConcordAssertGT(nextRequiredBlock_, 0);
@@ -2542,13 +2537,18 @@ void BCStateTran::processData() {
           break;
         }
       } else {
-        // this is the last block we need
+        // This is the last block we need. After committed to ST temporary blockchain, all blocks are deleted from ST
+        // temproary blockchain and committed to the blockchain
+        commitToChainDT_.start();
+        blocks_collected_.pause();
+        bytes_collected_.pause();
+        processCommitResultsAsync(lastBlock, ioPool_.numFreeElements() > 0);
+
         DataStoreTransaction::Guard g(psd_->beginTransaction());
         ConcordAssertEQ(nextCommittedBlockId_, nextRequiredBlock_);
         ConcordAssert(ioContexes_.empty());
         ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize, lastBlock));
-        LOG_DEBUG(getLogger(), "After putBlock (last block):" << KVLOG(nextRequiredBlock_));
-        // report collecting status (without vblock) into log
+
         commitToChainDT_.pause();
         g.txn()->setFirstRequiredBlock(0);
         g.txn()->setLastRequiredBlock(0);
