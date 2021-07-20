@@ -2474,21 +2474,12 @@ void BCStateTran::processData() {
         ctx.blockData = blockDataPool_.alloc();
         memcpy(ctx.blockData.get(), buffer_, actualBlockSize);
         ctx.future = as_->putBlockAsync(nextRequiredBlock_, ctx.blockData.get(), ctx.actualBlockSize, false);
-        ConcordAssert(ctx.future.valid());  // TODO - remove?
         dstPutBlockContexes_.push_back(std::move(ctx));
-        ConcordAssert(dstPutBlockContexes_.back().future.valid());   // TODO - remove?
-        ConcordAssert(dstPutBlockContexes_.front().future.valid());  // TODO - remove?
         LOG_TRACE(getLogger(), KVLOG(dstPutBlockContexes_.size()));
-
-        //{ f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
-        // TimeRecorder scoped_timer(*histograms_.dst_put_block_duration);
-        // ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize, lastBlock));
-        //}
       }
       while (!dstPutBlockContexes_.empty()) {
-        LOG_TRACE(getLogger(), KVLOG(dstPutBlockContexes_.size()));
         auto &ctx = dstPutBlockContexes_.front();
-        ConcordAssert(ctx.future.valid());  // TODO - add log
+        ConcordAssert(ctx.future.valid());
         if (!lastBlock && ctx.future.wait_for(std::chrono::nanoseconds(0)) != std::future_status::ready) {
           // TODO - trigger a timer 1ms if handoff is empty
           break;
@@ -2511,7 +2502,6 @@ void BCStateTran::processData() {
         ConcordAssertGT(nextCommittedBlockId_, 0);
         --nextCommittedBlockId_;
         g.txn()->setLastRequiredBlock(nextCommittedBlockId_);
-        LOG_TRACE(getLogger(), KVLOG(nextCommittedBlockId_));  // TODO remove
       }
       if (!lastBlock) {
         // putBlocksStTempDT_.pause();
