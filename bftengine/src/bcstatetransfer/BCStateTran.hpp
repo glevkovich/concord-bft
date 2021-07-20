@@ -566,6 +566,8 @@ class BCStateTran : public IStateTransfer {
   bool sourceFlag_;
   uint8_t sourceSnapshotCounter_;
 
+  uint64_t sourceBatchCounter_ = 0;
+
   ///////////////////////////////////////////////////////////////////////////
   // Latency Historgrams
   ///////////////////////////////////////////////////////////////////////////
@@ -596,7 +598,7 @@ class BCStateTran : public IStateTransfer {
                                         src_get_block_size_bytes,
                                         src_send_batch_duration,
                                         src_send_batch_size_bytes,
-                                        src_send_batch_size_blocks});
+                                        src_send_batch_size_chunks});
     }
     //////////////////////////////////////////////////////////
     // Shared Recorders - match the above registered recorders
@@ -622,7 +624,7 @@ class BCStateTran : public IStateTransfer {
     DEFINE_SHARED_RECORDER(
         src_send_batch_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(src_send_batch_size_bytes, 1, MAX_BATCH_SIZE_BYTES, 3, concord::diagnostics::Unit::BYTES);
-    DEFINE_SHARED_RECORDER(src_send_batch_size_blocks, 1, MAX_BATCH_SIZE_BLOCKS, 3, concord::diagnostics::Unit::COUNT);
+    DEFINE_SHARED_RECORDER(src_send_batch_size_chunks, 1, MAX_BATCH_SIZE_BLOCKS, 3, concord::diagnostics::Unit::COUNT);
   };
   Recorders histograms_;
 
