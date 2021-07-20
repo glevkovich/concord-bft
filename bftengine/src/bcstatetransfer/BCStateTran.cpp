@@ -153,6 +153,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       maxNumOfStoredCheckpoints_{0},
       numberOfReservedPages_{0},
       cycleCounter_(0),
+      buffer_(new char[maxItemSize_]),
       randomGen_{randomDevice_()},
       sourceSelector_{allOtherReplicas(),
                       config_.fetchRetransmissionTimeoutMs,
@@ -252,12 +253,6 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
 
   LOG_INFO(getLogger(), "Creating BCStateTran object: " << config_);
 
-  // srcGetBlockContextes_.resize(config_.maxNumberOfChunksInBatch);
-  buffer_ = new char[maxItemSize_]{};
-  // LOG_INFO(getLogger(),
-  //          "Allocated " << config_.maxNumberOfChunksInBatch + 1 << " buffers, " << maxItemSize_
-  //                       << " Bytes each in buffer_ and ioPool_");
-
   if (config_.runInSeparateThread) {
     handoff_.reset(new concord::util::Handoff(config_.myReplicaId));
     messageHandler_ = std::bind(&BCStateTran::handoffMsg, this, _1, _2, _3);
@@ -275,8 +270,6 @@ BCStateTran::~BCStateTran() {
   ConcordAssert(!running_);
   ConcordAssert(cacheOfVirtualBlockForResPages.empty());
   ConcordAssert(pendingItemDataMsgs.empty());
-
-  delete[] buffer_;
 }
 
 // Load metrics that are saved on persistent storage
@@ -2465,7 +2458,7 @@ void BCStateTran::processData() {
     const bool newBlock = getNextFullBlock(nextRequiredBlock_,
                                            badDataFromCurrentSourceReplica,
                                            lastChunkInRequiredBlock,
-                                           buffer_,
+                                           buffer_.get(),
                                            actualBlockSize,
                                            !isGettingBlocks,
                                            lastInBatch);
@@ -2474,14 +2467,14 @@ void BCStateTran::processData() {
     if (newBlock && isGettingBlocks) {
       TimeRecorder scoped_timer(*histograms_.dst_digest_calc_duration);
       ConcordAssert(!badDataFromCurrentSourceReplica);
-      newBlockIsValid = checkBlock(nextRequiredBlock_, digestOfNextRequiredBlock, buffer_, actualBlockSize);
+      newBlockIsValid = checkBlock(nextRequiredBlock_, digestOfNextRequiredBlock, buffer_.get(), actualBlockSize);
       badDataFromCurrentSourceReplica = !newBlockIsValid;
     } else if (newBlock && !isGettingBlocks) {
       ConcordAssert(!badDataFromCurrentSourceReplica);
       if (!config_.enableReservedPages)
         newBlockIsValid = true;
       else
-        newBlockIsValid = checkVirtualBlockOfResPages(digestOfNextRequiredBlock, buffer_, actualBlockSize);
+        newBlockIsValid = checkVirtualBlockOfResPages(digestOfNextRequiredBlock, buffer_.get(), actualBlockSize);
 
       badDataFromCurrentSourceReplica = !newBlockIsValid;
     } else {
@@ -2516,7 +2509,7 @@ void BCStateTran::processData() {
           auto ctx = ioPool_.alloc();
           ctx->blockId = nextRequiredBlock_;
           ctx->actualBlockSize = actualBlockSize;
-          memcpy(ctx->blockData.get(), buffer_, actualBlockSize);  // TODO - this can probably be optimized
+          memcpy(ctx->blockData.get(), buffer_.get(), actualBlockSize);  // TODO - this can probably be optimized
           ctx->future = as_->putBlockAsync(nextRequiredBlock_, ctx->blockData.get(), ctx->actualBlockSize, false);
           ioContexes_.push_back(std::move(ctx));
           histograms_.dst_num_pending_blocks_to_commit->record(ioContexes_.size());
@@ -2524,7 +2517,7 @@ void BCStateTran::processData() {
         processCommitResultsAsync(lastBlock, ioPool_.numFreeElements() > 0);
 
         as_->getPrevDigestFromBlock(
-            buffer_, actualBlockSize, reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
+            buffer_.get(), actualBlockSize, reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
         ConcordAssertGT(nextRequiredBlock_, 0);
         --nextRequiredBlock_;
         LOG_TRACE(getLogger(), KVLOG(nextRequiredBlock_));
@@ -2547,7 +2540,7 @@ void BCStateTran::processData() {
         DataStoreTransaction::Guard g(psd_->beginTransaction());
         ConcordAssertEQ(nextCommittedBlockId_, nextRequiredBlock_);
         ConcordAssert(ioContexes_.empty());
-        ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize, lastBlock));
+        ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_.get(), actualBlockSize, lastBlock));
 
         commitToChainDT_.pause();
         g.txn()->setFirstRequiredBlock(0);
@@ -2586,10 +2579,10 @@ void BCStateTran::processData() {
 
       if (config_.enableReservedPages) {
         // set the updated pages
-        uint32_t numOfUpdates = getNumberOfElements(buffer_);
+        uint32_t numOfUpdates = getNumberOfElements(buffer_.get());
         LOG_DEBUG(getLogger(), "numOfUpdates in vblock: " << numOfUpdates);
         for (uint32_t i = 0; i < numOfUpdates; i++) {
-          ElementOfVirtualBlock *e = getVirtualElement(i, config_.sizeOfReservedPage, buffer_);
+          ElementOfVirtualBlock *e = getVirtualElement(i, config_.sizeOfReservedPage, buffer_.get());
           g.txn()->setResPage(e->pageId, e->checkpointNumber, e->pageDigest, e->page);
           LOG_DEBUG(getLogger(), "Update page " << e->pageId);
         }
@@ -2833,8 +2826,8 @@ void BCStateTran::checkStoredCheckpoints(uint64_t firstStoredCheckpoint, uint64_
         // Extra debugging needed here for BC-2821
         if (computedBlockDigest != desc.digestOfLastBlock) {
           uint32_t blockSize = 0;
-          as_->getBlock(desc.lastBlock, buffer_, &blockSize);
-          concordUtils::HexPrintBuffer blockData{buffer_, blockSize};
+          as_->getBlock(desc.lastBlock, buffer_.get(), &blockSize);
+          concordUtils::HexPrintBuffer blockData{buffer_.get(), blockSize};
           LOG_FATAL(getLogger(), "Invalid stored checkpoint: " << KVLOG(desc.checkpointNum, desc.lastBlock, blockData));
           ConcordAssertEQ(computedBlockDigest, desc.digestOfLastBlock);
         }
