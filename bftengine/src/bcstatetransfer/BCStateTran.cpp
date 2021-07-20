@@ -1,6 +1,6 @@
 // Concord
 //
-// Copyright (c) 2018 VMware, Inc. All Rights Reserved.
+// Copyright (c) 2018-2021 VMware, Inc. All Rights Reserved.
 //
 // This product is licensed to you under the Apache 2.0 license (the "License").
 // You may not use this product except in compliance with the Apache 2.0
@@ -628,9 +628,6 @@ void BCStateTran::startCollectingStats() {
   gettingCheckpointSummariesDT_.reset();
   gettingMissingResPagesDT_.reset();
   cycleDT_.reset();
-  // betweenPutBlocksStTempDT_.reset();
-  // putBlocksStTempDT_.reset();
-
   sources_.clear();
 
   metrics_.overall_blocks_collected_.Get().Set(0ull);
@@ -1804,7 +1801,6 @@ bool BCStateTran::onMessage(const ItemDataMsg *m, uint32_t msgLen, uint16_t repl
     return false;
   }
 
-  //  const DataStore::CheckpointDesc fcp = psd_->getCheckpointBeingFetched();
   const uint64_t firstRequiredBlock = psd_->getFirstRequiredBlock();
   const uint64_t lastRequiredBlock = psd_->getLastRequiredBlock();
 
