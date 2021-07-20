@@ -358,17 +358,64 @@ class BCStateTran : public IStateTransfer {
   ///////////////////////////////////////////////////////////////////////////
   // Asynchronous Operations - Blocks IO
   ///////////////////////////////////////////////////////////////////////////
+
+  using BlockIOData = std::shared_ptr<char[]>;
   struct BlockIOContext {
-    BlockIOContext(uint16_t i, size_t sizeOfblockData) : index(i) { blockData.reset(new char[sizeOfblockData]); };
+    BlockIOContext(uint16_t i) : index(i), blockId(0), actualBlockSize() {};
     BlockIOContext() = delete;
 
-    const uint16_t index;
+    const uint16_t index;  // TODO - if in unordered container - rename to ctxId.
     uint64_t blockId;
     uint32_t actualBlockSize;
-    std::unique_ptr<char[]> blockData;
+    BlockIOData blockData;
     std::future<bool> future;
   };
 
+  class BlockIODataPool {
+   public:
+    BlockIODataPool(size_t maxNumElements, size_t elementSize)
+        : maxNumElements_(maxNumElements), elementSize_(elementSize) {
+      for (size_t i{0}; i < maxNumElements; ++i) {
+        elementsQ_.push_back(BlockIOData(new char[elementSize]));
+        LOG_TRACE(ST_SRC_LOG, "xxx in ctor:" << KVLOG((uintptr_t)elementsQ_.back().get()));
+        recognizedAddresses_.insert(elementsQ_.back().get());
+      }
+    }
+
+    size_t numFreeElements() const { return elementsQ_.size(); }
+    bool empty() { return elementsQ_.empty(); };
+    size_t maxElements() { return maxNumElements_; };
+    size_t elementSize() { return elementSize_; }
+
+    BlockIOData alloc() {
+      if (elementsQ_.empty()) {
+        throw std::runtime_error("No more free elements!");
+      }
+      auto ret = elementsQ_.front();
+      elementsQ_.pop_front();
+      return ret;
+    }
+
+    void free(BlockIOData &&element) {
+      if (elementsQ_.size() == maxNumElements_) {
+        throw std::runtime_error("All elements have already returned!");
+      }
+      if (recognizedAddresses_.find(element.get()) == recognizedAddresses_.end()) {
+        throw std::runtime_error(
+            "Trying to free unrocognized element (address was not allocated by this pool object)!");
+      }
+      elementsQ_.push_back(element);
+    }
+
+   private:
+    const size_t maxNumElements_;
+    const size_t elementSize_;
+    std::deque<BlockIOData> elementsQ_;
+    std::set<void*> recognizedAddresses_;
+  };
+
+  BlockIODataPool blockDataPool_;
+  std::deque<BlockIOContext> dstPutBlockContexes_;
   std::vector<BlockIOContext> srcGetBlockContextes_;
 
   // returns number of jobs pushed to queue
@@ -376,8 +423,6 @@ class BCStateTran : public IStateTransfer {
                                     uint64_t firstRequiredBlock,
                                     uint16_t numBlocks,
                                     size_t startContextIndex = 0);
-
-  std::deque<BlockIOContext> dstPutBlockContexes_;
   ///////////////////////////////////////////////////////////////////////////
   // Metrics
   ///////////////////////////////////////////////////////////////////////////
