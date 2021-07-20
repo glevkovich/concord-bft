@@ -92,6 +92,7 @@ BASIC_RUN_PARAMS?=-it --init --rm --privileged=true \
 					  --name="${CONCORD_BFT_DOCKER_CONTAINER}" \
 					  --workdir=${CONCORD_BFT_TARGET_SOURCE_PATH} \
 					  --mount type=bind,source=${CURDIR},target=${CONCORD_BFT_TARGET_SOURCE_PATH}${CONCORD_BFT_CONTAINER_MOUNT_CONSISTENCY} \
+					  --mount type=bind,source=/tmp/,target=/tmp/ \
 					  ${CONCORD_BFT_ADDITIONAL_RUN_PARAMS} \
 					  ${CONCORD_BFT_DOCKER_REPO}${CONCORD_BFT_DOCKER_IMAGE}:${CONCORD_BFT_DOCKER_IMAGE_VERSION}
 
@@ -107,6 +108,14 @@ IF_CONTAINER_RUNS=$(shell docker container inspect -f '{{.State.Running}}' ${CON
 help: ## The Makefile helps to build Concord-BFT in a docker container
 	@cat $(MAKEFILE_LIST) | grep -E '^[a-zA-Z_-]+:.*?## .*$$' | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
+
+build-q: gen_cmake ## Build Concord-BFT source. In order to build a specific target run: make TARGET=<target name>.
+	docker run ${CONCORD_BFT_USER_GROUP} ${BASIC_RUN_PARAMS} \
+		${CONCORD_BFT_CONTAINER_SHELL} -c \
+		"cd ${CONCORD_BFT_BUILD_DIR} && \
+		make -j $$(nproc) ${TARGET}"
+	@echo
+	@echo "Build finished. The binaries are in ${CURDIR}/${CONCORD_BFT_BUILD_DIR}"
 
 .PHONY: pull
 pull: ## Pull image from remote
