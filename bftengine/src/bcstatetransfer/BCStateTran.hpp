@@ -373,19 +373,17 @@ class BCStateTran : public IStateTransfer {
 
   class BlockIODataPool {
    public:
-    BlockIODataPool(size_t maxNumElements, size_t elementSize)
-        : maxNumElements_(maxNumElements), elementSize_(elementSize) {
+    BlockIODataPool(size_t maxNumElements, size_t elementSize) : maxNumElements_(maxNumElements) {
       for (size_t i{0}; i < maxNumElements; ++i) {
         elementsQ_.push_back(BlockIOData(new char[elementSize]));
-        LOG_TRACE(ST_SRC_LOG, "xxx in ctor:" << KVLOG((uintptr_t)elementsQ_.back().get()));
         recognizedAddresses_.insert(elementsQ_.back().get());
       }
     }
 
     size_t numFreeElements() const { return elementsQ_.size(); }
     bool empty() { return elementsQ_.empty(); };
+    bool full() { return elementsQ_.size() == maxNumElements_; };
     size_t maxElements() { return maxNumElements_; };
-    size_t elementSize() { return elementSize_; }
 
     BlockIOData alloc() {
       if (elementsQ_.empty()) {
@@ -409,7 +407,6 @@ class BCStateTran : public IStateTransfer {
 
    private:
     const size_t maxNumElements_;
-    const size_t elementSize_;
     std::deque<BlockIOData> elementsQ_;
     std::set<void*> recognizedAddresses_;
   };

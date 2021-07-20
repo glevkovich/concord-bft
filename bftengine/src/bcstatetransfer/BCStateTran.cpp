@@ -1301,6 +1301,8 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
   ConcordAssertEQ(nextRequiredBlock_, 0);
   ConcordAssert(digestOfNextRequiredBlock.isZero());
   ConcordAssert(pendingItemDataMsgs.empty());
+  ConcordAssert(dstPutBlockContexes_.empty());
+  ConcordAssert(blockDataPool_.full());
   ConcordAssertEQ(totalSizeOfPendingItemDataMsgs, 0);
 
   // set the preferred replicas
@@ -1634,8 +1636,13 @@ bool BCStateTran::onMessage(const FetchResPagesMsg *m, uint32_t msgLen, uint16_t
     outMsg.requestMsgSeqNum = m->msgSeqNum;
 
     LOG_WARN(getLogger(),
-             "Rejecting msg. Sending RejectFetchingMsg to replica "
-                 << KVLOG(replicaId, fetchingState, outMsg.requestMsgSeqNum, m->requiredCheckpointNum));
+             "Rejecting msg. Sending RejectFetchingMsg to replica " << KVLOG(replicaId,
+                                                                             fetchingState,
+                                                                             outMsg.requestMsgSeqNum,
+                                                                             m->msgSeqNum,
+                                                                             m->lastCheckpointKnownToRequester,
+                                                                             m->requiredCheckpointNum,
+                                                                             m->lastKnownChunk));
 
     metrics_.sent_reject_fetch_msg_++;
 
@@ -2339,12 +2346,12 @@ std::string BCStateTran::logsForCollectingStatus(const uint64_t firstRequiredBlo
 }
 
 bool BCStateTran::asyncProcessCommitResults(bool lastBlock, bool breakIfFutureNoReady) {
-  bool doneProcesssing = true;
-  ConcordAssertEQ(getFetchingState(), FetchingState::GettingMissingBlocks);
-  ConcordAssertGT(nextCommittedBlockId_, 0);
-
+  // Comment on committing asynchronously:
   // In the very rare case of exception, we will just fetch the committed blocks (to temproary chain) again
   // Put an existing block is completely valid operation if the block is identical
+  bool doneProcesssing = true;
+  ConcordAssertGT(nextCommittedBlockId_, 0);
+
   if (dstPutBlockContexes_.empty()) {
     return doneProcesssing;
   }
