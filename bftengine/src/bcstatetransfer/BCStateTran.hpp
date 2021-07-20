@@ -373,7 +373,8 @@ class BCStateTran : public IStateTransfer {
   using BlockIOContextPtr = std::shared_ptr<BlockIOContext>;
   class BlockIODataPool {
    public:
-    BlockIODataPool(size_t maxNumElements, size_t elementSize) : maxNumElements_(maxNumElements) {
+    BlockIODataPool(size_t maxNumElements, size_t elementSize, FetchingState& fetchingState)
+        : maxNumElements_(maxNumElements), fetchingState_(fetchingState) {
       for (size_t i{0}; i < maxNumElements_; ++i) {
         auto element = std::make_shared<BlockIOContext>();
         element->blockData.reset(new char[elementSize]);
@@ -420,9 +421,13 @@ class BCStateTran : public IStateTransfer {
     }
 
    private:
+    inline logging::Logger& getLogger() const {
+      return (fetchingState_ == FetchingState::NotFetching) ? ST_SRC_LOG : ST_DST_LOG;
+    }
     const size_t maxNumElements_;
     std::deque<BlockIOContextPtr> freeQ_;
     std::deque<BlockIOContextPtr> allocatedQ_;
+    FetchingState& fetchingState_;
   };
 
   const uint32_t processCommitsTimeoutMilli_ = 5;
