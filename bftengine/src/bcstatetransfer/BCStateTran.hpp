@@ -150,7 +150,6 @@ class BCStateTran : public IStateTransfer {
   std::unique_ptr<concord::util::Handoff> handoff_;
   IReplicaForStateTransfer* replicaForStateTransfer_ = nullptr;
 
-  // TODO - transform to smart pointer
   std::unique_ptr<char[]> buffer_;  // temporary buffer
 
   // random generator
@@ -271,7 +270,7 @@ class BCStateTran : public IStateTransfer {
 
   static const uint64_t ID_OF_VBLOCK_RES_PAGES = UINT64_MAX;
 
-  uint64_t nextRequiredBlock_ = 0;  // TODO - change to nextRequiredBlockId_
+  uint64_t nextRequiredBlock_ = 0;
   uint64_t nextCommittedBlockId_ = 0;
   STDigest digestOfNextRequiredBlock;
 
@@ -434,6 +433,7 @@ class BCStateTran : public IStateTransfer {
 
   BlockIODataPool ioPool_;
   std::deque<BlockIOContextPtr> ioContexes_;
+  bool oneShotTimerFlag_;  // used to control the trigger of oneShotTimer self requests
 
   // returns number of jobs pushed to queue
   uint16_t getBlocksConcurrentAsync(uint64_t nextBlockId, uint64_t firstRequiredBlock, uint16_t numBlocks);
@@ -509,6 +509,7 @@ class BCStateTran : public IStateTransfer {
     CounterHandle zero_reserved_page_;
     CounterHandle start_collecting_state_;
     CounterHandle on_timer_;
+    CounterHandle one_shot_timer_;
 
     CounterHandle on_transferring_complete_;
 
@@ -550,9 +551,7 @@ class BCStateTran : public IStateTransfer {
   DurationTracker<std::chrono::milliseconds> gettingCheckpointSummariesDT_;
   DurationTracker<std::chrono::milliseconds> gettingMissingBlocksDT_;
   DurationTracker<std::chrono::milliseconds> gettingMissingResPagesDT_;
-  // TODo - remove?
-  // DurationTracker<std::chrono::milliseconds> betweenPutBlocksStTempDT_;  // TODO(GL) - remove later when unneeded
-  // DurationTracker<std::chrono::milliseconds> putBlocksStTempDT_;         // TODO(GL) - remove later when unneeded
+
   FetchingState lastFetchingState_;
 
   void onFetchingStateChange(FetchingState newFetchingState);

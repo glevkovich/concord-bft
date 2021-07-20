@@ -160,6 +160,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
                       config_.sourceReplicaReplacementTimeoutMs,
                       ST_SRC_LOG},
       ioPool_(config_.maxNumberOfChunksInBatch, config_.maxBlockSize, lastFetchingState_),
+      oneShotTimerFlag_(true),
       last_metrics_dump_time_(0),
       metrics_dump_interval_in_sec_{std::chrono::seconds(config_.metricsDumpIntervalSec)},
       metrics_component_{
@@ -220,6 +221,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
                metrics_component_.RegisterCounter("zero_reserved_page"),
                metrics_component_.RegisterCounter("start_collecting_state"),
                metrics_component_.RegisterCounter("on_timer"),
+               metrics_component_.RegisterCounter("one_shot_timer"),
                metrics_component_.RegisterCounter("on_transferring_complete"),
                metrics_component_.RegisterCounter("handle_AskForCheckpointSummaries_msg"),
                metrics_component_.RegisterCounter("dst_handle_CheckpointsSummary_msg"),
@@ -665,6 +667,7 @@ void BCStateTran::startCollectingState() {
 
 // this function can be executed in context of another thread.
 void BCStateTran::onTimerImp() {
+  oneShotTimerFlag_ = true;
   if (!running_) return;
   time_in_handoff_queue_rec_.end();
   histograms_.handoff_queue_size->record(handoff_->size());
@@ -2330,9 +2333,14 @@ bool BCStateTran::processCommitResultsAsync(bool lastBlock, bool breakIfFutureNo
     if (breakIfFutureNoReady && !lastBlock &&
         (ctx->future.wait_for(std::chrono::nanoseconds(0)) != std::future_status::ready)) {
       doneProcesssing = false;
-      // processing not done. We must call processCommitResultsAsync in a short time to finish commit
-      // replicaForStateTransfer_->addOneShotTimer(processCommitsTimeout, processCommitsHandler_);
-      replicaForStateTransfer_->addOneShotTimer(processCommitsTimeoutMilli_);
+      // to reduce the number of one shot timer invocations by more than 90%, we do an approximation and use
+      // oneShotTimerFlag_
+      if (oneShotTimerFlag_) {
+        // processing not done. We must call processCommitResultsAsync in a short time to finish commit
+        metrics_.one_shot_timer_++;
+        replicaForStateTransfer_->addOneShotTimer(processCommitsTimeoutMilli_);
+        oneShotTimerFlag_ = false;
+      }
       break;
     }
     ConcordAssertEQ(ctx->blockId, nextCommittedBlockId_);
