@@ -1353,15 +1353,12 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
 }
 
 // TODO context index should be transformed here
-uint16_t BCStateTran::getBlocksConcurrentAsync(uint64_t nextBlockId,
-                                               uint64_t firstRequiredBlock,
-                                               uint16_t numBlocks,
-                                               size_t startContextIndex) {
+uint16_t BCStateTran::getBlocksConcurrentAsync(uint64_t nextBlockId, uint64_t firstRequiredBlock, uint16_t numBlocks) {
   ConcordAssertGE(config_.maxNumberOfChunksInBatch, numBlocks);
-  auto j{startContextIndex};
+  auto j{0};
 
-  LOG_DEBUG(getLogger(), KVLOG(nextBlockId, firstRequiredBlock, numBlocks, startContextIndex));
-  for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < startContextIndex + numBlocks); --i, ++j) {
+  LOG_DEBUG(getLogger(), KVLOG(nextBlockId, firstRequiredBlock, numBlocks, ioPool_.numFreeElements()));
+  for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < numBlocks) && !ioPool_.empty(); --i, ++j) {
     auto ctx = ioPool_.alloc();
     ctx->blockId = i;
     ctx->future = as_->getBlockAsync(ctx->blockId, ctx->blockData.get(), &ctx->actualBlockSize);
@@ -1464,7 +1461,6 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
                                              m->lastRequiredBlock,
                                              m->lastKnownChunkInLastRequiredBlock,
                                              preFetchBlockId));
-  size_t ctxIndex = 0;
   DurationTracker<std::chrono::microseconds> waitFutureDuration;  // TODO(GL) - remove when unneeded
   bool getNextBlock = true;
   char *buffer = nullptr;
@@ -1570,10 +1566,9 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
 
       // this context is usage us done. We can now use it to prefetch future batch block
       if (preFetchBlockId > 0) {
-        getBlocksConcurrentAsync(preFetchBlockId, m->firstRequiredBlock, 1, ctxIndex);
+        getBlocksConcurrentAsync(preFetchBlockId, m->firstRequiredBlock, 1);
         --preFetchBlockId;
       }
-      ++ctxIndex;
       getNextBlock = true;
     }
   } while (true);
@@ -1583,7 +1578,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   src_send_batch_duration_rec_.end();
 
   if (preFetchBlockId > 0) {
-    getBlocksConcurrentAsync(preFetchBlockId, m->firstRequiredBlock, 1, ctxIndex);
+    getBlocksConcurrentAsync(preFetchBlockId, m->firstRequiredBlock, 1);
   }
   return false;
 }

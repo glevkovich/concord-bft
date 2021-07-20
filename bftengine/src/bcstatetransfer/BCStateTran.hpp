@@ -436,10 +436,7 @@ class BCStateTran : public IStateTransfer {
   std::deque<BlockIOContextPtr> ioContexes_;
 
   // returns number of jobs pushed to queue
-  uint16_t getBlocksConcurrentAsync(uint64_t nextBlockId,
-                                    uint64_t firstRequiredBlock,
-                                    uint16_t numBlocks,
-                                    size_t startContextIndex = 0);
+  uint16_t getBlocksConcurrentAsync(uint64_t nextBlockId, uint64_t firstRequiredBlock, uint16_t numBlocks);
 
   // lastBlock: is true if we put the oldest block (firstRequiredBlock)
   // breakIfFutureNoReady: is true if caller would like to exit if the next future is not ready (job not ended yet).
