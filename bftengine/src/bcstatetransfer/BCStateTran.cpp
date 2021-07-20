@@ -2542,7 +2542,9 @@ void BCStateTran::processData() {
         metrics_.num_pending_blocks_to_commit_++;
         histograms_.dst_num_pending_blocks_to_commit->record(dstPutBlockContexes_.size());
       }
-      asyncProcessCommitResults(lastBlock, true);
+      // If there are no more free elements in blockDataPool_, for simplicity, wait for at least for one to get free
+      // (this is very rare)
+      asyncProcessCommitResults(lastBlock, blockDataPool_.numFreeElements() > 0);
       if (!lastBlock) {
         as_->getPrevDigestFromBlock(
             buffer_, actualBlockSize, reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
