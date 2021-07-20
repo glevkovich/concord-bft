@@ -110,6 +110,7 @@ void ReplicaForStateTransfer::onTransferringComplete(uint64_t checkpointNumberOf
 void ReplicaForStateTransfer::changeStateTransferTimerPeriod(uint32_t timerPeriodMilli) {
   // TODO(GG): if this method is invoked by an external thread, then send an "internal message" to the commands
   // processing thread
+  LOG_INFO(GL, "Changing stateTranTimer_ timeout to " << KVLOG(timerPeriodMilli));
   timers_.reset(stateTranTimer_, std::chrono::milliseconds(timerPeriodMilli));
   metric_state_transfer_timer_.Get().Set(timerPeriodMilli);
 }
