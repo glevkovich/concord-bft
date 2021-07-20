@@ -63,7 +63,7 @@ class TestAppState : public IAppState {
   // TODO - implement
   void getPrevDigestFromBlock(const char* blockData,
                               const uint32_t blockSize,
-                              StateTransferDigest* outPrevBlockDigest) {
+                              StateTransferDigest* outPrevBlockDigest) override {
     ConcordAssert(false);
   }
 
