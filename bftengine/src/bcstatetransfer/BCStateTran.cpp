@@ -746,7 +746,6 @@ std::string BCStateTran::getStatus() {
     nested_data.insert(toPair("currentSource", current_source));
     nested_data.insert(toPair("preferredReplicas", preferred_replicas));
     nested_data.insert(toPair("nextRequiredBlock", nextRequiredBlock_));
-    nested_data.insert(toPair("nextCommittedBlockId", nextCommittedBlockId_));
     nested_data.insert(STRPAIR(totalSizeOfPendingItemDataMsgs));
     result.insert(toPair("fetchingStateDetails",
                          concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
@@ -1335,7 +1334,6 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
     if (newCheckpoint.lastBlock > lastReachableBlockNum) {
       // fetch blocks
       g.txn()->setFirstRequiredBlock(lastReachableBlockNum + 1);
-      lastCollectedBlockId_ = lastReachableBlockNum + 1;
       g.txn()->setLastRequiredBlock(newCheckpoint.lastBlock);
     } else {
       // fetch reserved pages (vblock)
@@ -2275,7 +2273,6 @@ std::string BCStateTran::logsForCollectingStatus(const uint64_t firstRequiredBlo
   nested_data.insert(toPair(
       "collectRange", std::to_string(firstRequiredBlock) + ", " + std::to_string(firstCollectedBlockId_.value())));
   nested_data.insert(toPair("lastCollectedBlock", nextRequiredBlock_));
-  nested_data.insert(toPair("nextCommittedBlockId", nextCommittedBlockId_));
   nested_data.insert(toPair("blocksLeft", (nextRequiredBlock_ - firstRequiredBlock)));
   nested_data.insert(toPair("cycle", cycleCounter_));
   nested_data.insert(toPair("elapsedTime", std::to_string(blocks_overall_r.elapsed_time_ms_) + " ms"));
@@ -2381,13 +2378,12 @@ void BCStateTran::processData() {
   bool badDataFromCurrentSourceReplica = false;
 
   while (true) {
-    //////////////////////////////////////////////////////////////////////////
-    // if needed, select a source replica
-    //////////////////////////////////////////////////////////////////////////
-
     bool newSourceReplica = sourceSelector_.shouldReplaceSource(currTime, badDataFromCurrentSourceReplica);
 
     if (newSourceReplica) {
+      //////////////////////////////////////////////////////////////////////////
+      // Select a source replica
+      //////////////////////////////////////////////////////////////////////////
       sourceSelector_.removeCurrentReplica();
       if (fs == FetchingState::GettingMissingResPages && sourceSelector_.noPreferredReplicas()) {
         EnterGettingCheckpointSummariesState();
@@ -2407,10 +2403,10 @@ void BCStateTran::processData() {
     ConcordAssert(sourceSelector_.hasSource());
     ConcordAssertEQ(badDataFromCurrentSourceReplica, false);
 
-    //////////////////////////////////////////////////////////////////////////
-    // if needed, determine the next required block
-    //////////////////////////////////////////////////////////////////////////
     if (nextRequiredBlock_ == 0) {
+      //////////////////////////////////////////////////////////////////////////
+      // Determine the next required block
+      //////////////////////////////////////////////////////////////////////////
       ConcordAssert(digestOfNextRequiredBlock.isZero());
 
       DataStore::CheckpointDesc cp = psd_->getCheckpointBeingFetched();
@@ -2420,7 +2416,6 @@ void BCStateTran::processData() {
       } else {
         nextRequiredBlock_ = psd_->getLastRequiredBlock();
         nextCommittedBlockId_ = nextRequiredBlock_;
-        firstCollectedBlockId_ = nextRequiredBlock_;
 
         // if this is the last block in this checkpoint
         if (cp.lastBlock == nextRequiredBlock_) {
@@ -2431,6 +2426,7 @@ void BCStateTran::processData() {
           as_->getPrevDigestFromBlock(nextRequiredBlock_ + 1,
                                       reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
         }
+        if (!firstCollectedBlockId_) firstCollectedBlockId_ = nextRequiredBlock_;
       }
     }
 
@@ -2445,7 +2441,6 @@ void BCStateTran::processData() {
     //////////////////////////////////////////////////////////////////////////
     // Process and check the available chunks
     //////////////////////////////////////////////////////////////////////////
-
     int16_t lastChunkInRequiredBlock = 0;
     uint32_t actualBlockSize = 0;
     bool lastInBatch = false;
@@ -2478,12 +2473,13 @@ void BCStateTran::processData() {
 
     LOG_DEBUG(getLogger(), KVLOG(newBlock, newBlockIsValid, actualBlockSize));
 
-    //////////////////////////////////////////////////////////////////////////
-    // if we have a new block
-    //////////////////////////////////////////////////////////////////////////
     const uint64_t firstRequiredBlock = psd_->getFirstRequiredBlock();
     bool lastBlock = isGettingBlocks && (firstRequiredBlock >= nextRequiredBlock_);
+    if (!lastCollectedBlockId_) lastCollectedBlockId_ = firstRequiredBlock;
     if (newBlockIsValid && isGettingBlocks) {
+      //////////////////////////////////////////////////////////////////////////
+      // if we have a new block
+      //////////////////////////////////////////////////////////////////////////
       sourceSelector_.setSourceSelectionTime(currTime);
 
       ConcordAssertAND(lastChunkInRequiredBlock >= 1, actualBlockSize > 0);
@@ -2499,7 +2495,9 @@ void BCStateTran::processData() {
           getLogger(),
           "Before putBlock id " << nextRequiredBlock_ << ":" << std::boolalpha << KVLOG(lastBlock, actualBlockSize));
       if (!lastBlock) {
+        //////////////////////////////////////////////////////////////////////////
         // Not the last block - block are committed into ST temporary blockchain
+        //////////////////////////////////////////////////////////////////////////
         if (!ioPool_.empty()) {
           auto ctx = ioPool_.alloc();
           ctx->blockId = nextRequiredBlock_;
@@ -2525,8 +2523,10 @@ void BCStateTran::processData() {
           break;
         }
       } else {
+        //////////////////////////////////////////////////////////////////////////
         // This is the last block we need. After committed to ST temporary blockchain, all blocks are deleted from ST
         // temproary blockchain and committed to the blockchain
+        //////////////////////////////////////////////////////////////////////////
         commitToChainDT_.start();
         blocks_collected_.pause();
         bytes_collected_.pause();
@@ -2564,11 +2564,10 @@ void BCStateTran::processData() {
         sendFetchResPagesMsg(0);
         break;
       }
-    }
-    //////////////////////////////////////////////////////////////////////////
-    // if we have a new vblock
-    //////////////////////////////////////////////////////////////////////////
-    else if (newBlockIsValid && !isGettingBlocks) {
+    } else if (newBlockIsValid && !isGettingBlocks) {
+      //////////////////////////////////////////////////////////////////////////
+      // if we have a new vblock
+      //////////////////////////////////////////////////////////////////////////
       DataStoreTransaction::Guard g(psd_->beginTransaction());
       sourceSelector_.setSourceSelectionTime(currTime);
 
@@ -2625,11 +2624,10 @@ void BCStateTran::processData() {
       ConcordAssertEQ(getFetchingState(), FetchingState::NotFetching);
       cycleEndSummary();
       break;
-    }
-    //////////////////////////////////////////////////////////////////////////
-    // if we don't have new full block/vblock (but we did not detect a problem)
-    //////////////////////////////////////////////////////////////////////////
-    else if (!badDataFromCurrentSourceReplica) {
+    } else if (!badDataFromCurrentSourceReplica) {
+      //////////////////////////////////////////////////////////////////////////
+      // if we don't have new full block/vblock (but we did not detect a problem)
+      //////////////////////////////////////////////////////////////////////////
       if (isGettingBlocks) processCommitResultsAsync(lastBlock, true);
       bool retransmissionTimeoutExpired = sourceSelector_.retransmissionTimeoutExpired(currTime);
       if (newSourceReplica || retransmissionTimeoutExpired) {
