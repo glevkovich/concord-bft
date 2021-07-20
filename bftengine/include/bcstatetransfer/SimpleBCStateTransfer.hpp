@@ -89,12 +89,18 @@ class IAppState {
   // the argument outPrevBlockDigest. Returns true IFF block blockId exists.
   virtual bool getPrevDigestFromBlock(uint64_t blockId, StateTransferDigest *outPrevBlockDigest) = 0;
 
+  // Extracts a digest out of in-memory block.
+  virtual void getPrevDigestFromBlock(const char *blockData,
+                                      const uint32_t blockSize,
+                                      StateTransferDigest *outPrevBlockDigest) = 0;
+
   // adds block
   // blockId   - the block number
   // block     - pointer to a buffer that contains the new block
   // blockSize - the size of the new block
   // trylinkSTChainFrom - when true, for backup replica - try to remove blocks from State Transfer chain and add them to
   // the blockchain
+  // Returs true if operation succeeded. Else, returns false. Call may also throw an exception which is also a failure.
   virtual bool putBlock(const uint64_t blockId,
                         const char *block,
                         const uint32_t blockSize,
@@ -107,6 +113,8 @@ class IAppState {
   // job has been done.
   // User should 1st check the future value: if true - call succeeded, if false - call failed.
   // All exceptions in putBlock are caught within this call implementation.
+  // Returns true if operation succeeded. Else, returns false. Call to future.get() may also throw an exception which
+  // is also a failure.
   virtual std::future<bool> putBlockAsync(uint64_t blockId,
                                           const char *block,
                                           const uint32_t blockSize,
