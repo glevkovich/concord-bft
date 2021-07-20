@@ -268,7 +268,8 @@ class BCStateTran : public IStateTransfer {
 
   static const uint64_t ID_OF_VBLOCK_RES_PAGES = UINT64_MAX;
 
-  uint64_t nextRequiredBlock_ = 0;
+  uint64_t nextRequiredBlock_ = 0;  // TODO - change to nextRequiredBlockId_
+  uint64_t nextCommittedBlockId_ = 0;
   STDigest digestOfNextRequiredBlock;
 
   struct compareItemDataMsg {
@@ -357,15 +358,18 @@ class BCStateTran : public IStateTransfer {
   ///////////////////////////////////////////////////////////////////////////
   // Asynchronous Operations - Blocks IO
   ///////////////////////////////////////////////////////////////////////////
-  struct GetBlockContext {
-    uint16_t index;
+  struct BlockIOContext {
+    BlockIOContext(uint16_t i, size_t sizeOfblockData) : index(i) { blockData.reset(new char[sizeOfblockData]); };
+    BlockIOContext() = delete;
+
+    const uint16_t index;
     uint64_t blockId;
-    uint32_t blockSize;
-    std::unique_ptr<char[]> block;
+    uint32_t actualBlockSize;
+    std::unique_ptr<char[]> blockData;
     std::future<bool> future;
   };
 
-  std::vector<GetBlockContext> srcGetBlockContextes_;
+  std::vector<BlockIOContext> srcGetBlockContextes_;
 
   // returns number of jobs pushed to queue
   uint16_t asyncGetBlocksConcurrent(uint64_t nextBlockId,
@@ -373,12 +377,7 @@ class BCStateTran : public IStateTransfer {
                                     uint16_t numBlocks,
                                     size_t startContextIndex = 0);
 
-  struct PutBlockContext {
-    uint64_t blockId;
-    std::future<bool> future;
-  };
-
-  std::deque<PutBlockContext> dstPutBlockContexes_;
+  std::deque<BlockIOContext> dstPutBlockContexes_;
   ///////////////////////////////////////////////////////////////////////////
   // Metrics
   ///////////////////////////////////////////////////////////////////////////
@@ -401,6 +400,7 @@ class BCStateTran : public IStateTransfer {
     GaugeHandle size_of_reserved_page_;
     GaugeHandle last_msg_seq_num_;
     GaugeHandle next_required_block_;
+    GaugeHandle next_commited_block_id_;
     GaugeHandle num_pending_item_data_msgs_;
     GaugeHandle total_size_of_pending_item_data_msgs_;
     AtomicGaugeHandle last_block_;
@@ -486,8 +486,8 @@ class BCStateTran : public IStateTransfer {
   DurationTracker<std::chrono::milliseconds> gettingMissingBlocksDT_;
   DurationTracker<std::chrono::milliseconds> gettingMissingResPagesDT_;
   // TODo - remove?
-  DurationTracker<std::chrono::milliseconds> betweenPutBlocksStTempDT_;  // TODO(GL) - remove later when unneeded
-  DurationTracker<std::chrono::milliseconds> putBlocksStTempDT_;         // TODO(GL) - remove later when unneeded
+  // DurationTracker<std::chrono::milliseconds> betweenPutBlocksStTempDT_;  // TODO(GL) - remove later when unneeded
+  // DurationTracker<std::chrono::milliseconds> putBlocksStTempDT_;         // TODO(GL) - remove later when unneeded
   FetchingState lastFetchingState_;
 
   void onFetchingStateChange(FetchingState newFetchingState);
