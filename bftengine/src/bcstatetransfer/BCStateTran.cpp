@@ -179,6 +179,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
                metrics_component_.RegisterGauge("next_commited_block_id_", nextCommittedBlockId_),
                metrics_component_.RegisterGauge("num_pending_item_data_msgs_", pendingItemDataMsgs.size()),
                metrics_component_.RegisterGauge("total_size_of_pending_item_data_msgs", totalSizeOfPendingItemDataMsgs),
+               metrics_component_.RegisterGauge("num_pending_blocks_to_commit", dstPutBlockContexes_.size()),
                metrics_component_.RegisterAtomicGauge("last_block_", 0),
                metrics_component_.RegisterGauge("last_reachable_block", 0),
 
@@ -397,9 +398,7 @@ void BCStateTran::stopRunning() {
   summariesCerts.clear();
   numOfSummariesFromOtherReplicas.clear();
   sourceSelector_.reset();
-
   nextRequiredBlock_ = 0;
-  LOG_TRACE(getLogger(), KVLOG(nextRequiredBlock_));  // TODO - remove
   metrics_.next_required_block_.Get().Set(0);
   digestOfNextRequiredBlock.makeZero();
 
@@ -415,6 +414,7 @@ void BCStateTran::stopRunning() {
     if (ctx.blockData) blockDataPool_.free(std::move(ctx.blockData));
   }
   dstPutBlockContexes_.clear();
+  metrics_.num_pending_blocks_to_commit_.Get().Set(0);
   pendingItemDataMsgs.clear();
   totalSizeOfPendingItemDataMsgs = 0;
   replicaForStateTransfer_ = nullptr;
@@ -1487,7 +1487,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
                                              m->lastKnownChunkInLastRequiredBlock,
                                              preFetchBlockId));
   size_t ctxIndex = 0;
-  DurationTracker<std::chrono::microseconds> waitFutureDuration;  // TODO(GG) - remove when unneeded
+  DurationTracker<std::chrono::microseconds> waitFutureDuration;  // TODO(GL) - remove when unneeded
   bool getNextBlock = true;
   char *buffer = nullptr;
   uint32_t sizeOfNextBlock = 0;
@@ -2255,7 +2255,6 @@ void BCStateTran::EnterGettingCheckpointSummariesState() {
 
   asyncProcessCommitResults(false, false);
   nextRequiredBlock_ = 0;
-  LOG_TRACE(getLogger(), KVLOG(nextRequiredBlock_));  // TODO - remove
   nextCommittedBlockId_ = 0;
   digestOfNextRequiredBlock.makeZero();
   clearAllPendingItemsData();
@@ -2382,7 +2381,8 @@ bool BCStateTran::asyncProcessCommitResults(bool lastBlock, bool breakIfFutureNo
     LOG_DEBUG(getLogger(), "After putBlockAsync:" << KVLOG(ctx.blockId));
     blockDataPool_.free(std::move(ctx.blockData));
     dstPutBlockContexes_.pop_front();  // free memory
-    LOG_TRACE(getLogger(), KVLOG(dstPutBlockContexes_.size()));
+    metrics_.num_pending_blocks_to_commit_--;
+    histograms_.dst_num_pending_blocks_to_commit->record(dstPutBlockContexes_.size());
     ConcordAssertGT(nextCommittedBlockId_, 0);
     --nextCommittedBlockId_;
   }
@@ -2443,11 +2443,9 @@ void BCStateTran::processData() {
       DataStore::CheckpointDesc cp = psd_->getCheckpointBeingFetched();
       if (!isGettingBlocks) {
         nextRequiredBlock_ = ID_OF_VBLOCK_RES_PAGES;
-        LOG_TRACE(getLogger(), KVLOG(nextRequiredBlock_));  // TODO - remove
         digestOfNextRequiredBlock = cp.digestOfResPagesDescriptor;
       } else {
         nextRequiredBlock_ = psd_->getLastRequiredBlock();
-        LOG_TRACE(getLogger(), KVLOG(nextRequiredBlock_));  // TODO - remove
         nextCommittedBlockId_ = nextRequiredBlock_;
 
         // if this is the last block in this checkpoint
@@ -2464,7 +2462,6 @@ void BCStateTran::processData() {
     }
 
     ConcordAssertNE(nextRequiredBlock_, 0);
-    ConcordAssertNE(nextCommittedBlockId_, 0);
     ConcordAssertOR(
         (fetchingState == FetchingState::GettingMissingBlocks) && (nextCommittedBlockId_ >= nextRequiredBlock_),
         (fetchingState == FetchingState::GettingMissingResPages) && (nextRequiredBlock_ == ID_OF_VBLOCK_RES_PAGES));
@@ -2542,7 +2539,8 @@ void BCStateTran::processData() {
         memcpy(ctx.blockData.get(), buffer_, actualBlockSize);
         ctx.future = as_->putBlockAsync(nextRequiredBlock_, ctx.blockData.get(), ctx.actualBlockSize, false);
         dstPutBlockContexes_.push_back(std::move(ctx));
-        LOG_TRACE(getLogger(), KVLOG(dstPutBlockContexes_.size()));
+        metrics_.num_pending_blocks_to_commit_++;
+        histograms_.dst_num_pending_blocks_to_commit->record(dstPutBlockContexes_.size());
       }
       asyncProcessCommitResults(lastBlock, true);
       if (!lastBlock) {
@@ -2572,7 +2570,7 @@ void BCStateTran::processData() {
         g.txn()->setLastRequiredBlock(0);
         clearAllPendingItemsData();
         nextRequiredBlock_ = 0;
-        LOG_TRACE(getLogger(), KVLOG(nextRequiredBlock_));  // TODO - remove
+        nextCommittedBlockId_ = 0;
         digestOfNextRequiredBlock.makeZero();
 
         ConcordAssertEQ(getFetchingState(), FetchingState::GettingMissingResPages);
@@ -2630,9 +2628,7 @@ void BCStateTran::processData() {
       sourceSelector_.reset();
       metrics_.preferred_replicas_.Get().Set("");
       metrics_.current_source_replica_.Get().Set(NO_REPLICA);
-
       nextRequiredBlock_ = 0;
-      LOG_TRACE(getLogger(), KVLOG(nextRequiredBlock_));  // TODO - remove
       digestOfNextRequiredBlock.makeZero();
       clearAllPendingItemsData();
 

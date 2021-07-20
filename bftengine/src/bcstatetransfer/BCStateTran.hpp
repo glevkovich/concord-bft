@@ -453,6 +453,7 @@ class BCStateTran : public IStateTransfer {
     GaugeHandle next_commited_block_id_;
     GaugeHandle num_pending_item_data_msgs_;
     GaugeHandle total_size_of_pending_item_data_msgs_;
+    GaugeHandle num_pending_blocks_to_commit_;
     AtomicGaugeHandle last_block_;
     GaugeHandle last_reachable_block_;
 
@@ -561,6 +562,7 @@ class BCStateTran : public IStateTransfer {
     static constexpr uint64_t MAX_BATCH_SIZE_BYTES = 10ULL * 1024ULL * 1024ULL * 1024ULL;  // 10GB
     static constexpr uint64_t MAX_BATCH_SIZE_BLOCKS = 1000ULL;
     static constexpr uint64_t MAX_HANDOFF_QUEUE_SIZE = 10000ULL;
+    static constexpr uint64_t MAX_PENDING_BLOCKS_SIZE = 1000ULL;
 
     Recorders() {
       auto& registrar = concord::diagnostics::RegistrarSingleton::getInstance();
@@ -571,7 +573,7 @@ class BCStateTran : public IStateTransfer {
                                        {
                                            dst_handle_ItemData_msg,
                                            dst_time_between_sendFetchBlocksMsg,
-                                           // dst_put_block_duration,
+                                           dst_num_pending_blocks_to_commit,
                                            dst_digest_calc_duration,
                                        });
       // source component
@@ -595,8 +597,8 @@ class BCStateTran : public IStateTransfer {
         dst_handle_ItemData_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
         dst_time_between_sendFetchBlocksMsg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    // DEFINE_SHARED_RECORDER(
-    //    dst_put_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(
+        dst_num_pending_blocks_to_commit, 1, MAX_PENDING_BLOCKS_SIZE, 3, concord::diagnostics::Unit::COUNT);
     DEFINE_SHARED_RECORDER(
         dst_digest_calc_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     // source
