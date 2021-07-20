@@ -2324,11 +2324,11 @@ bool BCStateTran::processCommitResultsAsync(bool lastBlock, bool breakIfFutureNo
   // In the very rare case of exception, we will just fetch the committed blocks (to temproary chain) again
   // Put an existing block is completely valid operation if the block is identical
   bool doneProcesssing = true;
-  ConcordAssertGT(nextCommittedBlockId_, 0);
 
   if (ioContexes_.empty()) {
     return doneProcesssing;
   }
+  ConcordAssertGT(nextCommittedBlockId_, 0);
 
   DataStoreTransaction::Guard g(psd_->beginTransaction());
   while (!ioContexes_.empty()) {
