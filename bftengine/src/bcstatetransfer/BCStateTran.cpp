@@ -364,6 +364,7 @@ void BCStateTran::startRunning(IReplicaForStateTransfer *r) {
   ConcordAssertNE(r, nullptr);
   running_ = true;
   replicaForStateTransfer_ = r;
+  replicaForStateTransfer_->changeStateTransferTimerPeriod(config_.refreshTimerMs);
 }
 
 void BCStateTran::stopRunning() {
@@ -1014,7 +1015,7 @@ void BCStateTran::onFetchingStateChange(FetchingState newFetchingState) {
            "FetchingState changed from " << stateName(lastFetchingState_) << " to " << stateName(newFetchingState));
   switch (lastFetchingState_) {
     case FetchingState::NotFetching:
-      replicaForStateTransfer_->changeStateTransferTimerPeriod(config_.refreshTimerMs);
+      // replicaForStateTransfer_->changeStateTransferTimerPeriod(config_.refreshTimerMs);
       cycleDT_.start();
       break;
     case FetchingState::GettingCheckpointSummaries:
@@ -1029,8 +1030,8 @@ void BCStateTran::onFetchingStateChange(FetchingState newFetchingState) {
   }
   switch (newFetchingState) {
     case FetchingState::NotFetching: {
-      const uint32_t defaultTimeout = 5000;
-      replicaForStateTransfer_->changeStateTransferTimerPeriod(defaultTimeout);
+      // const uint32_t defaultTimeout = 5000;
+      // replicaForStateTransfer_->changeStateTransferTimerPeriod(defaultTimeout);
       cycleDT_.pause();
       break;
     }
