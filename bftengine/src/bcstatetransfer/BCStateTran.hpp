@@ -150,6 +150,7 @@ class BCStateTran : public IStateTransfer {
   std::unique_ptr<concord::util::Handoff> handoff_;
   IReplicaForStateTransfer* replicaForStateTransfer_ = nullptr;
 
+  // TODO - transform to smart pointer
   char* buffer_;  // temporary buffer
 
   // random generator
@@ -361,61 +362,65 @@ class BCStateTran : public IStateTransfer {
   // Asynchronous Operations - Blocks IO
   ///////////////////////////////////////////////////////////////////////////
 
-  using BlockIOData = std::shared_ptr<char[]>;
+  // using BlockIOData = std::shared_ptr<char[]>;
   struct BlockIOContext {
-    BlockIOContext() : blockId(0), actualBlockSize(0){};
-
-    uint64_t blockId;
-    uint32_t actualBlockSize;
-    BlockIOData blockData;
+    uint64_t blockId = 0;
+    uint32_t actualBlockSize = 0;
+    std::unique_ptr<char[]> blockData;
     std::future<bool> future;
   };
 
+  using BlockIOContextPtr = std::shared_ptr<BlockIOContext>;
   class BlockIODataPool {
    public:
     BlockIODataPool(size_t maxNumElements, size_t elementSize) : maxNumElements_(maxNumElements) {
-      for (size_t i{0}; i < maxNumElements; ++i) {
-        elementsQ_.push_back(BlockIOData(new char[elementSize]));
-        recognizedAddresses_.insert(elementsQ_.back().get());
+      for (size_t i{0}; i < maxNumElements_; ++i) {
+        auto element = std::make_shared<BlockIOContext>();
+        element->blockData.reset(new char[elementSize]);
+        freeQ_.push_back(element);
       }
     }
 
-    size_t numFreeElements() const { return elementsQ_.size(); }
-    bool empty() { return elementsQ_.empty(); };
-    bool full() { return elementsQ_.size() == maxNumElements_; };
+    size_t numFreeElements() const { return freeQ_.size(); }
+    size_t numAllocatedElements() const { return allocatedQ_.size(); }
+    bool empty() { return freeQ_.empty(); };
+    bool full() { return allocatedQ_.empty(); };
     size_t maxElements() { return maxNumElements_; };
 
-    BlockIOData alloc() {
-      if (elementsQ_.empty()) {
+    BlockIOContextPtr alloc() {
+      if (freeQ_.empty()) {
         throw std::runtime_error("No more free elements!");
       }
-      auto ret = elementsQ_.front();
-      elementsQ_.pop_front();
+      auto ret = freeQ_.front();
+      freeQ_.pop_front();
+      allocatedQ_.push_back(ret);
       return ret;
     }
 
-    void free(BlockIOData&& element) {
-      if (elementsQ_.size() == maxNumElements_) {
+    void free(BlockIOContextPtr& element) {
+      if (freeQ_.size() == maxNumElements_) {
         throw std::runtime_error("All elements have already returned!");
       }
-      if (recognizedAddresses_.find(element.get()) == recognizedAddresses_.end()) {
+      if (std::find(allocatedQ_.begin(), allocatedQ_.end(), element) == allocatedQ_.end()) {
         throw std::runtime_error(
             "Trying to free unrocognized element (address was not allocated by this pool object)!");
       }
-      elementsQ_.push_back(std::move(element));
+      if (element->future.valid()) element->future.get();
+      auto ret = allocatedQ_.front();
+      allocatedQ_.pop_front();
+      freeQ_.push_back(std::move(element));
     }
 
    private:
     const size_t maxNumElements_;
-    std::deque<BlockIOData> elementsQ_;
-    std::set<void*> recognizedAddresses_;
+    std::deque<BlockIOContextPtr> freeQ_;
+    std::deque<BlockIOContextPtr> allocatedQ_;
   };
 
   const uint32_t processCommitsTimeoutMilli_ = 5;
 
-  BlockIODataPool blockDataPool_;
-  std::deque<BlockIOContext> dstPutBlockContexes_;
-  std::vector<BlockIOContext> srcGetBlockContextes_;
+  BlockIODataPool ioPool_;
+  std::deque<BlockIOContextPtr> ioContexes_;
 
   // returns number of jobs pushed to queue
   uint16_t asyncGetBlocksConcurrent(uint64_t nextBlockId,
@@ -453,7 +458,6 @@ class BCStateTran : public IStateTransfer {
     GaugeHandle next_commited_block_id_;
     GaugeHandle num_pending_item_data_msgs_;
     GaugeHandle total_size_of_pending_item_data_msgs_;
-    GaugeHandle num_pending_blocks_to_commit_;
     AtomicGaugeHandle last_block_;
     GaugeHandle last_reachable_block_;
 
