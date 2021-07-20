@@ -39,6 +39,7 @@
 #include "throughput.hpp"
 #include "diagnostics.h"
 #include "performance_handler.h"
+#include "Timers.hpp"
 
 using std::set;
 using std::map;
@@ -52,6 +53,7 @@ using concord::util::Throughput;
 using concord::diagnostics::Recorder;
 using concord::diagnostics::AsyncTimeRecorder;
 using concord::util::DurationTracker;
+using std::literals::chrono_literals::operator""ms;
 
 namespace bftEngine::bcst::impl {
 
@@ -412,6 +414,8 @@ class BCStateTran : public IStateTransfer {
     std::set<void*> recognizedAddresses_;
   };
 
+  const uint32_t processCommitsTimeoutMilli_ = 5;
+
   BlockIODataPool blockDataPool_;
   std::deque<BlockIOContext> dstPutBlockContexes_;
   std::vector<BlockIOContext> srcGetBlockContextes_;
@@ -422,9 +426,11 @@ class BCStateTran : public IStateTransfer {
                                     uint16_t numBlocks,
                                     size_t startContextIndex = 0);
 
-  // lastBlock is true if we put the oldest block (firstRequiredBlock)
-  // asyncFlag is true if caller would like to exit if the next future is not ready (job not ended yet)
-  void asyncProcessCommitResults(bool lastBlock, bool asyncFlag);
+  // lastBlock: is true if we put the oldest block (firstRequiredBlock)
+  // breakIfFutureNoReady: is true if caller would like to exit if the next future is not ready (job not ended yet).
+  //    In that case, a ONESHOT timer is invoked to check the future again soon.
+  // return: true if done procesing all futures, and false if the front one was not std::future_status::ready
+  bool asyncProcessCommitResults(bool lastBlock, bool breakIfFutureNoReady);
   ///////////////////////////////////////////////////////////////////////////
   // Metrics
   ///////////////////////////////////////////////////////////////////////////
