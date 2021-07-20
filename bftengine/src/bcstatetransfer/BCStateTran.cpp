@@ -1279,7 +1279,6 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
   ConcordAssertNE(checkSummary, nullptr);
   ConcordAssert(sourceSelector_.isReset());
   ConcordAssertEQ(nextRequiredBlock_, 0);
-  ConcordAssertEQ(nextCommittedBlockId_, 0);
   ConcordAssert(digestOfNextRequiredBlock.isZero());
   ConcordAssert(pendingItemDataMsgs.empty());
   ConcordAssertEQ(totalSizeOfPendingItemDataMsgs, 0);
