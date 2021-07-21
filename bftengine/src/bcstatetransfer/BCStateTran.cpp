@@ -394,13 +394,13 @@ void BCStateTran::stopRunning() {
   summariesCerts.clear();
   numOfSummariesFromOtherReplicas.clear();
   sourceSelector_.reset();
-
   nextRequiredBlock_ = 0;
   metrics_.next_required_block_.Get().Set(0);
   digestOfNextRequiredBlock.makeZero();
 
-  for (auto i : pendingItemDataMsgs) replicaForStateTransfer_->freeStateTransferMsg(reinterpret_cast<char *>(i));
-
+  for (auto i : pendingItemDataMsgs) {
+    replicaForStateTransfer_->freeStateTransferMsg(reinterpret_cast<char *>(i));
+  }
   pendingItemDataMsgs.clear();
   for (auto &ctx : ioContexes_) ioPool_.free(ctx);
   ioContexes_.clear();
@@ -632,9 +632,6 @@ void BCStateTran::startCollectingStats() {
   gettingCheckpointSummariesDT_.reset();
   gettingMissingResPagesDT_.reset();
   cycleDT_.reset();
-  betweenPutBlocksStTempDT_.reset();
-  putBlocksStTempDT_.reset();
-
   sources_.clear();
 
   metrics_.overall_blocks_collected_.Get().Set(0ull);
@@ -689,7 +686,6 @@ void BCStateTran::onTimerImp() {
     last_metrics_dump_time_ = currTimeForDumping;
     LOG_INFO(getLogger(), "--BCStateTransfer metrics dump--" + metrics_component_.ToJson());
   }
-  auto currTime = getMonotonicTimeMilli();
 
   // take a snapshot and log after time passed is approx x2 of fetchRetransmissionTimeoutMs
   if (sourceFlag_ &&
@@ -702,7 +698,10 @@ void BCStateTran::onTimerImp() {
     sourceFlag_ = false;
     sourceSnapshotCounter_ = 0;
   }
+
+  // Retransmit AskForCheckpointSummariesMsg if needed
   if (fs == FetchingState::GettingCheckpointSummaries) {
+    auto currTime = getMonotonicTimeMilli();
     if ((currTime - lastTimeSentAskForCheckpointSummariesMsg) > config_.checkpointSummariesRetransmissionTimeoutMs) {
       LOG_DEBUG(getLogger(),
                 KVLOG(retransmissionNumberOfAskForCheckpointSummariesMsg, kResetCount_AskForCheckpointSummaries));
@@ -711,6 +710,7 @@ void BCStateTran::onTimerImp() {
 
       sendAskForCheckpointSummariesMsg();
     }
+    // process data if fetching
   } else if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages) {
     processData();
   }
@@ -1609,8 +1609,13 @@ bool BCStateTran::onMessage(const FetchResPagesMsg *m, uint32_t msgLen, uint16_t
     outMsg.requestMsgSeqNum = m->msgSeqNum;
 
     LOG_WARN(getLogger(),
-             "Rejecting msg. Sending RejectFetchingMsg to replica "
-                 << KVLOG(replicaId, fetchingState, outMsg.requestMsgSeqNum, m->requiredCheckpointNum));
+             "Rejecting msg. Sending RejectFetchingMsg to replica " << KVLOG(replicaId,
+                                                                             fetchingState,
+                                                                             outMsg.requestMsgSeqNum,
+                                                                             m->msgSeqNum,
+                                                                             m->lastCheckpointKnownToRequester,
+                                                                             m->requiredCheckpointNum,
+                                                                             m->lastKnownChunk));
 
     metrics_.sent_reject_fetch_msg_++;
 
@@ -1738,7 +1743,6 @@ bool BCStateTran::onMessage(const RejectFetchingMsg *m, uint32_t msgLen, uint16_
   }
 
   ConcordAssert(sourceSelector_.isPreferred(replicaId));
-
   LOG_WARN(getLogger(), "Removing replica from preferred replicas: " << KVLOG(replicaId));
   sourceSelector_.removeCurrentReplica();
   metrics_.current_source_replica_.Get().Set(NO_REPLICA);
@@ -1798,7 +1802,6 @@ bool BCStateTran::onMessage(const ItemDataMsg *m, uint32_t msgLen, uint16_t repl
     return false;
   }
 
-  //  const DataStore::CheckpointDesc fcp = psd_->getCheckpointBeingFetched();
   const uint64_t firstRequiredBlock = psd_->getFirstRequiredBlock();
   const uint64_t lastRequiredBlock = psd_->getLastRequiredBlock();
 
@@ -2004,7 +2007,9 @@ void BCStateTran::verifyEmptyInfoAboutGettingCheckpointSummary() {
 void BCStateTran::clearAllPendingItemsData() {
   LOG_DEBUG(getLogger(), "");
 
-  for (auto i : pendingItemDataMsgs) replicaForStateTransfer_->freeStateTransferMsg(reinterpret_cast<char *>(i));
+  for (auto i : pendingItemDataMsgs) {
+    replicaForStateTransfer_->freeStateTransferMsg(reinterpret_cast<char *>(i));
+  }
 
   pendingItemDataMsgs.clear();
   totalSizeOfPendingItemDataMsgs = 0;
@@ -2044,7 +2049,6 @@ bool BCStateTran::getNextFullBlock(uint64_t requiredBlock,
   outBadDataDetected = false;
   outLastChunkInRequiredBlock = 0;
   outBlockSize = 0;
-
   bool badData = false;
   bool fullBlock = false;
   uint16_t totalNumberOfChunks = 0;
@@ -2375,13 +2379,12 @@ void BCStateTran::processData() {
   bool badDataFromCurrentSourceReplica = false;
 
   while (true) {
-    //////////////////////////////////////////////////////////////////////////
-    // if needed, select a source replica
-    //////////////////////////////////////////////////////////////////////////
-
     bool newSourceReplica = sourceSelector_.shouldReplaceSource(currTime, badDataFromCurrentSourceReplica);
 
     if (newSourceReplica) {
+      //////////////////////////////////////////////////////////////////////////
+      // Select a source replica
+      //////////////////////////////////////////////////////////////////////////
       sourceSelector_.removeCurrentReplica();
       if (fs == FetchingState::GettingMissingResPages && sourceSelector_.noPreferredReplicas()) {
         EnterGettingCheckpointSummariesState();
@@ -2401,10 +2404,10 @@ void BCStateTran::processData() {
     ConcordAssert(sourceSelector_.hasSource());
     ConcordAssertEQ(badDataFromCurrentSourceReplica, false);
 
-    //////////////////////////////////////////////////////////////////////////
-    // if needed, determine the next required block
-    //////////////////////////////////////////////////////////////////////////
     if (nextRequiredBlock_ == 0) {
+      //////////////////////////////////////////////////////////////////////////
+      // Determine the next required block
+      //////////////////////////////////////////////////////////////////////////
       ConcordAssert(digestOfNextRequiredBlock.isZero());
 
       DataStore::CheckpointDesc cp = psd_->getCheckpointBeingFetched();
@@ -2439,7 +2442,6 @@ void BCStateTran::processData() {
     //////////////////////////////////////////////////////////////////////////
     // Process and check the available chunks
     //////////////////////////////////////////////////////////////////////////
-
     int16_t lastChunkInRequiredBlock = 0;
     uint32_t actualBlockSize = 0;
     bool lastInBatch = false;
@@ -2477,13 +2479,13 @@ void BCStateTran::processData() {
 
     LOG_DEBUG(getLogger(), KVLOG(newBlock, newBlockIsValid, actualBlockSize));
 
-    //////////////////////////////////////////////////////////////////////////
-    // if we have a new block
-    //////////////////////////////////////////////////////////////////////////
     const uint64_t firstRequiredBlock = psd_->getFirstRequiredBlock();
     bool lastBlock = isGettingBlocks && (firstRequiredBlock >= nextRequiredBlock_);
     if (!lastCollectedBlockId_) lastCollectedBlockId_ = firstRequiredBlock;
     if (newBlockIsValid && isGettingBlocks) {
+      //////////////////////////////////////////////////////////////////////////
+      // if we have a new block
+      //////////////////////////////////////////////////////////////////////////
       sourceSelector_.setSourceSelectionTime(currTime);
 
       ConcordAssertAND(lastChunkInRequiredBlock >= 1, actualBlockSize > 0);
@@ -2499,8 +2501,6 @@ void BCStateTran::processData() {
           getLogger(),
           "Before putBlock id " << nextRequiredBlock_ << ":" << std::boolalpha << KVLOG(lastBlock, actualBlockSize));
       if (!lastBlock) {
-        putBlocksStTempDT_.pause();
-        betweenPutBlocksStTempDT_.start();
         //////////////////////////////////////////////////////////////////////////
         // Not the last block - block are committed into ST temporary blockchain
         //////////////////////////////////////////////////////////////////////////
@@ -2573,11 +2573,10 @@ void BCStateTran::processData() {
         sendFetchResPagesMsg(0);
         break;
       }
-    }
-    //////////////////////////////////////////////////////////////////////////
-    // if we have a new vblock
-    //////////////////////////////////////////////////////////////////////////
     } else if (newBlockIsValid && !isGettingBlocks) {
+      //////////////////////////////////////////////////////////////////////////
+      // if we have a new vblock
+      //////////////////////////////////////////////////////////////////////////
       DataStoreTransaction::Guard g(psd_->beginTransaction());
       sourceSelector_.setSourceSelectionTime(currTime);
 
@@ -2603,13 +2602,10 @@ void BCStateTran::processData() {
 
       g.txn()->setCheckpointDesc(cp.checkpointNum, cp);
       g.txn()->deleteCheckpointBeingFetched();
-
       deleteOldCheckpoints(cp.checkpointNum, g.txn());
-
       sourceSelector_.reset();
       metrics_.preferred_replicas_.Get().Set("");
       metrics_.current_source_replica_.Get().Set(NO_REPLICA);
-
       nextRequiredBlock_ = 0;
       digestOfNextRequiredBlock.makeZero();
       clearAllPendingItemsData();
@@ -2635,10 +2631,10 @@ void BCStateTran::processData() {
       ConcordAssertEQ(getFetchingState(), FetchingState::NotFetching);
       cycleEndSummary();
       break;
-    //////////////////////////////////////////////////////////////////////////
-    // if we don't have new full block/vblock (but we did not detect a problem)
-    //////////////////////////////////////////////////////////////////////////
     } else if (!badDataFromCurrentSourceReplica) {
+      //////////////////////////////////////////////////////////////////////////
+      // if we don't have new full block/vblock (but we did not detect a problem)
+      //////////////////////////////////////////////////////////////////////////
       if (isGettingBlocks) processCommitResultsAsync(lastBlock, true);
       bool retransmissionTimeoutExpired = sourceSelector_.retransmissionTimeoutExpired(currTime);
       if (newSourceReplica || retransmissionTimeoutExpired) {
@@ -2652,8 +2648,8 @@ void BCStateTran::processData() {
       }
       break;
     }
-  }
-}
+  }  //  while
+}  // processData
 
 void BCStateTran::cycleEndSummary() {
   Throughput::Results blocksCollectedResults;
@@ -2676,8 +2672,7 @@ void BCStateTran::cycleEndSummary() {
   auto gettingMissingBlocksDuration = gettingMissingBlocksDT_.totalDuration(true);
   auto commitToChainDuration = commitToChainDT_.totalDuration(true);
   auto gettingMissingResPagesDuration = gettingMissingResPagesDT_.totalDuration(true);
-  auto betweenPutBlocksStDuration = betweenPutBlocksStTempDT_.totalDuration(true);
-  auto putBlocksStTempDuration = putBlocksStTempDT_.totalDuration(true);
+
   LOG_INFO(getLogger(),
            "State Transfer cycle ended (#"
                << cycleCounter_ << "), Total Duration: " << cycleDuration << "ms, "
@@ -2685,8 +2680,6 @@ void BCStateTran::cycleEndSummary() {
                << "Time to fetch missing blocks: " << gettingMissingBlocksDuration << "ms, "
                << "Time to commit to chain: " << commitToChainDuration << "ms, "
                << "Time to get reserved pages (vblock): " << gettingMissingResPagesDuration << "ms, "
-               << "Total time between putblock (GettingMissingBlocks) " << betweenPutBlocksStDuration << "ms, "
-               << "Total time for putblock (GettingMissingBlocks) " << putBlocksStTempDuration << "ms, "
                << "Collected blocks range [" << std::to_string(lastCollectedBlockId_.value()) << ", "
                << std::to_string(firstCollectedBlockId_.value()) << "], Collected "
                << std::to_string(blocksCollectedResults.num_processed_items_) + " blocks and " +
