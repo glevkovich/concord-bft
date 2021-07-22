@@ -39,6 +39,7 @@
 #include "throughput.hpp"
 #include "diagnostics.h"
 #include "performance_handler.h"
+#include "Timers.hpp"
 
 using std::set;
 using std::map;
@@ -269,6 +270,7 @@ class BCStateTran : public IStateTransfer {
   static const uint64_t ID_OF_VBLOCK_RES_PAGES = UINT64_MAX;
 
   uint64_t nextRequiredBlock_ = 0;
+  uint64_t nextCommittedBlockId_ = 0;
   STDigest digestOfNextRequiredBlock;
 
   struct compareItemDataMsg {
@@ -425,12 +427,21 @@ class BCStateTran : public IStateTransfer {
     FetchingState& fetchingState_;
   };
 
+  // Must be less than config_.refreshTimerMs
+  const uint32_t processCommitsTimeoutMilli_ = 5;
+
   BlockIODataPool ioPool_;
   std::deque<BlockIOContextPtr> ioContexes_;
+  bool oneShotTimerFlag_;  // used to control the trigger of oneShotTimer self requests
 
   // returns number of jobs pushed to queue
   uint16_t getBlocksConcurrentAsync(uint64_t nextBlockId, uint64_t firstRequiredBlock, uint16_t numBlocks);
 
+  // lastBlock: is true if we put the oldest block (firstRequiredBlock)
+  // breakIfNotReady: is true if caller would like to exit if the next future is not ready (job not ended yet).
+  //    In that case, a ONESHOT timer is invoked to check the future again soon.
+  // return: true if done procesing all futures, and false if the front one was not std::future_status::ready
+  bool processCommitResultsAsync(bool lastBlock, bool breakIfNotReady);
   ///////////////////////////////////////////////////////////////////////////
   // Metrics
   ///////////////////////////////////////////////////////////////////////////
@@ -453,6 +464,7 @@ class BCStateTran : public IStateTransfer {
     GaugeHandle size_of_reserved_page_;
     GaugeHandle last_msg_seq_num_;
     GaugeHandle next_required_block_;
+    GaugeHandle next_commited_block_id_;
     GaugeHandle num_pending_item_data_msgs_;
     GaugeHandle total_size_of_pending_item_data_msgs_;
     AtomicGaugeHandle last_block_;
@@ -496,6 +508,7 @@ class BCStateTran : public IStateTransfer {
     CounterHandle zero_reserved_page_;
     CounterHandle start_collecting_state_;
     CounterHandle on_timer_;
+    CounterHandle one_shot_timer_;
 
     CounterHandle on_transferring_complete_;
 
