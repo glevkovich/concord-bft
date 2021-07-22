@@ -153,11 +153,13 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       maxNumOfStoredCheckpoints_{0},
       numberOfReservedPages_{0},
       cycleCounter_(0),
+      buffer_(new char[maxItemSize_]),
       randomGen_{randomDevice_()},
       sourceSelector_{allOtherReplicas(),
                       config_.fetchRetransmissionTimeoutMs,
                       config_.sourceReplicaReplacementTimeoutMs,
                       ST_SRC_LOG},
+      ioPool_(config_.maxNumberOfChunksInBatch, config_.maxBlockSize, lastFetchingState_),
       last_metrics_dump_time_(0),
       metrics_dump_interval_in_sec_{std::chrono::seconds(config_.metricsDumpIntervalSec)},
       metrics_component_{
@@ -248,12 +250,6 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
   // Register metrics component with the default aggregator.
   metrics_component_.Register();
 
-  srcGetBlockContextes_.resize(config_.maxNumberOfChunksInBatch);
-  for (uint16_t i{0}; i < config_.maxNumberOfChunksInBatch; ++i) {
-    srcGetBlockContextes_[i].block.reset(new char[config_.maxBlockSize]);
-    srcGetBlockContextes_[i].index = i;
-  }
-  buffer_ = new char[maxItemSize_]{};
   LOG_INFO(getLogger(), "Creating BCStateTran object: " << config_);
 
   if (config_.runInSeparateThread) {
@@ -273,8 +269,6 @@ BCStateTran::~BCStateTran() {
   ConcordAssert(!running_);
   ConcordAssert(cacheOfVirtualBlockForResPages.empty());
   ConcordAssert(pendingItemDataMsgs.empty());
-
-  delete[] buffer_;
 }
 
 // Load metrics that are saved on persistent storage
@@ -403,6 +397,9 @@ void BCStateTran::stopRunning() {
   for (auto i : pendingItemDataMsgs) replicaForStateTransfer_->freeStateTransferMsg(reinterpret_cast<char *>(i));
 
   pendingItemDataMsgs.clear();
+  for (auto &ctx : ioContexes_) ioPool_.free(ctx);
+  ioContexes_.clear();
+  ConcordAssert(ioPool_.full());
   totalSizeOfPendingItemDataMsgs = 0;
   replicaForStateTransfer_ = nullptr;
 }
@@ -1279,6 +1276,8 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
   ConcordAssertEQ(nextRequiredBlock_, 0);
   ConcordAssert(digestOfNextRequiredBlock.isZero());
   ConcordAssert(pendingItemDataMsgs.empty());
+  ConcordAssert(ioContexes_.empty());
+  ConcordAssert(ioPool_.full());
   ConcordAssertEQ(totalSizeOfPendingItemDataMsgs, 0);
 
   // set the preferred replicas
@@ -1345,26 +1344,16 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
   return true;
 }
 
-uint16_t BCStateTran::asyncGetBlocksConcurrent(uint64_t nextBlockId,
-                                               uint64_t firstRequiredBlock,
-                                               uint16_t numBlocks,
-                                               size_t startContextIndex) {
+uint16_t BCStateTran::getBlocksConcurrentAsync(uint64_t nextBlockId, uint64_t firstRequiredBlock, uint16_t numBlocks) {
   ConcordAssertGE(config_.maxNumberOfChunksInBatch, numBlocks);
-  auto j{startContextIndex};
+  auto j{0};
 
-  LOG_DEBUG(getLogger(), KVLOG(nextBlockId, firstRequiredBlock, numBlocks, startContextIndex));
-  for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < startContextIndex + numBlocks); --i, ++j) {
-    auto &ctx = srcGetBlockContextes_[j];
-    // start the job ASAP, return result to on-stack future
-    if (ctx.future.valid()) {
-      // wait for previous thread to finish - we must call it explicitly here, can't relay on dtor
-      // TODO(GL)- get() can be optimize by waiting 0 time and continue calling next jobs which might have finished. 1st
-      // research if wait time > 0.
-      ctx.future.get();
-      LOG_DEBUG(getLogger(), "Waiting for previous thread to finish job on context " << KVLOG(ctx.blockId, ctx.index));
-    }
-    ctx.blockId = i;
-    ctx.future = as_->getBlockAsync(ctx.blockId, ctx.block.get(), config_.maxBlockSize, &ctx.blockSize);
+  LOG_DEBUG(getLogger(), KVLOG(nextBlockId, firstRequiredBlock, numBlocks, ioPool_.numFreeElements()));
+  for (uint64_t i{nextBlockId}; (i >= firstRequiredBlock) && (j < numBlocks) && !ioPool_.empty(); --i, ++j) {
+    auto ctx = ioPool_.alloc();
+    ctx->blockId = i;
+    ctx->future = as_->getBlockAsync(ctx->blockId, ctx->blockData.get(), config_.maxBlockSize, &ctx->actualBlockSize);
+    ioContexes_.push_back(std::move(ctx));
   }
 
   return j;
@@ -1426,7 +1415,7 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
 
   // start recording time to send a whole batch, and its size
   uint64_t batchSizeBytes = 0;
-  uint64_t batchSizeBlocks = 0;
+  uint64_t batchSizeChunks = 0;
   src_send_batch_duration_rec_.clear();
   src_send_batch_duration_rec_.start();
 
@@ -1435,12 +1424,20 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
   uint16_t nextChunk = m->lastKnownChunkInLastRequiredBlock + 1;
   uint16_t numOfSentChunks = 0;
 
-  if (!config_.enableSourceBlocksPreFetch || !srcGetBlockContextes_[0].future.valid() ||
-      (srcGetBlockContextes_[0].blockId != nextBlockId)) {
-    LOG_INFO(getLogger(),
-             "Call asyncGetBlocksConcurrent: source blocks prefetch disabled (first batch or retransmission): "
-                 << KVLOG(srcGetBlockContextes_[0].blockId, nextBlockId));
-    asyncGetBlocksConcurrent(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
+  if (!config_.enableSourceBlocksPreFetch || ioContexes_.empty() || (ioContexes_.front()->blockId != nextBlockId)) {
+    if (ioContexes_.empty()) {
+      LOG_INFO(getLogger(),
+               "Call getBlocksConcurrentAsync: source blocks prefetch disabled (first batch or retransmission): "
+                   << config_.enableSourceBlocksPreFetch);
+    } else {
+      LOG_INFO(getLogger(),
+               "Call getBlocksConcurrentAsync: source blocks prefetch disabled (first batch or retransmission): "
+                   << KVLOG(config_.enableSourceBlocksPreFetch, ioContexes_.front()->blockId, nextBlockId));
+      for (auto &ctx : ioContexes_) ioPool_.free(ctx);
+      ioContexes_.clear();
+    }
+
+    getBlocksConcurrentAsync(nextBlockId, m->firstRequiredBlock, config_.maxNumberOfChunksInBatch);
   }
 
   // Fetch blocks and send all chunks for the batch. Also, while looping start to pre-fetch next batch
@@ -1455,37 +1452,43 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
                                              m->lastRequiredBlock,
                                              m->lastKnownChunkInLastRequiredBlock,
                                              preFetchBlockId));
-  size_t ctxIndex = 0;
-  DurationTracker<std::chrono::microseconds> waitFutureDuration;  // TODO(GG) - remove when unneeded
-  bool getNextBlock = true;
+  ++sourceBatchCounter_;
+  DurationTracker<std::chrono::microseconds> waitFutureDuration;  // TODO(GL) - remove when unneeded
+  bool getNextBlock = (nextChunk == 1);
   char *buffer = nullptr;
   uint32_t sizeOfNextBlock = 0;
   do {
+    auto &ctx = ioContexes_.front();
     if (getNextBlock) {
       // wait for worker to finish getting next block
-      auto &ctx = srcGetBlockContextes_[ctxIndex];
-      ConcordAssert(ctx.future.valid());
+      ConcordAssert(ctx->future.valid());
       waitFutureDuration.start();
-      if (!ctx.future.get()) {
-        LOG_ERROR(getLogger(), "Block not found in storage, abort batch:" << KVLOG(ctx.index, ctx.blockId));
-        rejectFetchingMsg();
-        return false;
+      try {
+        if (!ctx->future.get()) {
+          LOG_ERROR(getLogger(), "Block not found in storage, abort batch:" << KVLOG(ctx->blockId));
+          rejectFetchingMsg();
+          return false;
+        }
+      } catch (const std::exception &ex) {
+        LOG_FATAL(getLogger(), "exception:" << ex.what());
+        ConcordAssert(false);
+      } catch (...) {
+        LOG_FATAL(getLogger(), "Unknown exception!");
+        ConcordAssert(false);
       }
-      ConcordAssertGT(ctx.blockSize, 0);
-      ConcordAssertEQ(ctx.blockId, nextBlockId);
-      sizeOfNextBlock = ctx.blockSize;
-      buffer = ctx.block.get();
-      LOG_DEBUG(
-          getLogger(),
-          "Start sending next block: " << KVLOG(nextBlockId, sizeOfNextBlock, waitFutureDuration.totalDuration(true)));
+      ConcordAssertGT(ctx->actualBlockSize, 0);
+      ConcordAssertEQ(ctx->blockId, nextBlockId);
+      LOG_DEBUG(getLogger(),
+                "Start sending next block: " << KVLOG(
+                    sourceBatchCounter_, nextBlockId, ctx->actualBlockSize, waitFutureDuration.totalDuration(true)));
       waitFutureDuration.reset();
 
       // some statistics
-      histograms_.src_get_block_size_bytes->record(ctx.blockSize);
-      batchSizeBytes += sizeOfNextBlock;
-      ++batchSizeBlocks;
+      histograms_.src_get_block_size_bytes->record(ctx->actualBlockSize);
       getNextBlock = false;
     }
+    buffer = ctx->blockData.get();
+    sizeOfNextBlock = ctx->actualBlockSize;
 
     uint32_t sizeOfLastChunk = config_.maxChunkSize;
     uint32_t numOfChunksInNextBlock = sizeOfNextBlock / config_.maxChunkSize;
@@ -1503,6 +1506,8 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
 
     SCOPED_MDC_SEQ_NUM(getSequenceNumber(replicaId, m->msgSeqNum, nextChunk, nextBlockId));
     uint32_t chunkSize = (nextChunk < numOfChunksInNextBlock) ? config_.maxChunkSize : sizeOfLastChunk;
+    batchSizeBytes += chunkSize;
+    ++batchSizeChunks;
 
     ConcordAssertGT(chunkSize, 0);
 
@@ -1530,7 +1535,6 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
 
     metrics_.sent_item_data_msg_++;
     replicaForStateTransfer_->sendStateTransferMessage(reinterpret_cast<char *>(outMsg), outMsg->size(), replicaId);
-
     ItemDataMsg::free(outMsg);
     numOfSentChunks++;
 
@@ -1541,30 +1545,32 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
     } else if (static_cast<uint16_t>(nextChunk + 1) <= numOfChunksInNextBlock) {
       // we still have chunks in block
       nextChunk++;
-    } else if ((nextBlockId - 1) < m->firstRequiredBlock) {
-      LOG_DEBUG(getLogger(), "Batch end - sent all relevant blocks: " << KVLOG(m->firstRequiredBlock));
-      break;
     } else {
-      // no more chunks in the block
-      --nextBlockId;
-      nextChunk = 1;
+      ioPool_.free(ctx);
+      ioContexes_.pop_front();
+
       // this context is usage us done. We can now use it to prefetch future batch block
       if (preFetchBlockId > 0) {
-        asyncGetBlocksConcurrent(preFetchBlockId, m->firstRequiredBlock, 1, ctxIndex);
+        getBlocksConcurrentAsync(preFetchBlockId, m->firstRequiredBlock, 1);
         --preFetchBlockId;
       }
-      ++ctxIndex;
-      getNextBlock = true;
+
+      if ((nextBlockId - 1) < m->firstRequiredBlock) {
+        LOG_DEBUG(getLogger(), "Batch end - sent all relevant blocks: " << KVLOG(m->firstRequiredBlock));
+        break;
+      } else {
+        // no more chunks in the block, continue to next block
+        --nextBlockId;
+        nextChunk = 1;
+        getNextBlock = true;
+      }
     }
   } while (true);
 
   histograms_.src_send_batch_size_bytes->record(batchSizeBytes);
-  histograms_.src_send_batch_size_blocks->record(batchSizeBlocks);
+  histograms_.src_send_batch_size_chunks->record(batchSizeChunks);
   src_send_batch_duration_rec_.end();
 
-  if (preFetchBlockId > 0) {
-    asyncGetBlocksConcurrent(preFetchBlockId, m->firstRequiredBlock, 1, ctxIndex);
-  }
   return false;
 }
 
@@ -2380,7 +2386,7 @@ void BCStateTran::processData() {
     const bool newBlock = getNextFullBlock(nextRequiredBlock_,
                                            badDataFromCurrentSourceReplica,
                                            lastChunkInRequiredBlock,
-                                           buffer_,
+                                           buffer_.get(),
                                            actualBlockSize,
                                            !isGettingBlocks,
                                            lastInBatch);
@@ -2389,14 +2395,14 @@ void BCStateTran::processData() {
     if (newBlock && isGettingBlocks) {
       TimeRecorder scoped_timer(*histograms_.dst_digest_calc_duration);
       ConcordAssert(!badDataFromCurrentSourceReplica);
-      newBlockIsValid = checkBlock(nextRequiredBlock_, digestOfNextRequiredBlock, buffer_, actualBlockSize);
+      newBlockIsValid = checkBlock(nextRequiredBlock_, digestOfNextRequiredBlock, buffer_.get(), actualBlockSize);
       badDataFromCurrentSourceReplica = !newBlockIsValid;
     } else if (newBlock && !isGettingBlocks) {
       ConcordAssert(!badDataFromCurrentSourceReplica);
       if (!config_.enableReservedPages)
         newBlockIsValid = true;
       else
-        newBlockIsValid = checkVirtualBlockOfResPages(digestOfNextRequiredBlock, buffer_, actualBlockSize);
+        newBlockIsValid = checkVirtualBlockOfResPages(digestOfNextRequiredBlock, buffer_.get(), actualBlockSize);
 
       badDataFromCurrentSourceReplica = !newBlockIsValid;
     } else {
@@ -2489,10 +2495,10 @@ void BCStateTran::processData() {
 
       if (config_.enableReservedPages) {
         // set the updated pages
-        uint32_t numOfUpdates = getNumberOfElements(buffer_);
+        uint32_t numOfUpdates = getNumberOfElements(buffer_.get());
         LOG_DEBUG(getLogger(), "numOfUpdates in vblock: " << numOfUpdates);
         for (uint32_t i = 0; i < numOfUpdates; i++) {
-          ElementOfVirtualBlock *e = getVirtualElement(i, config_.sizeOfReservedPage, buffer_);
+          ElementOfVirtualBlock *e = getVirtualElement(i, config_.sizeOfReservedPage, buffer_.get());
           g.txn()->setResPage(e->pageId, e->checkpointNumber, e->pageDigest, e->page);
           LOG_DEBUG(getLogger(), "Update page " << e->pageId);
         }
@@ -2734,8 +2740,8 @@ void BCStateTran::checkStoredCheckpoints(uint64_t firstStoredCheckpoint, uint64_
         // Extra debugging needed here for BC-2821
         if (computedBlockDigest != desc.digestOfLastBlock) {
           uint32_t blockSize = 0;
-          as_->getBlock(desc.lastBlock, buffer_, config_.maxBlockSize, &blockSize);
-          concordUtils::HexPrintBuffer blockData{buffer_, blockSize};
+          as_->getBlock(desc.lastBlock, buffer_.get(), config_.maxBlockSize, &blockSize);
+          concordUtils::HexPrintBuffer blockData{buffer_.get(), blockSize};
           LOG_FATAL(getLogger(), "Invalid stored checkpoint: " << KVLOG(desc.checkpointNum, desc.lastBlock, blockData));
           ConcordAssertEQ(computedBlockDigest, desc.digestOfLastBlock);
         }

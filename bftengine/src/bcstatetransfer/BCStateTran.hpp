@@ -148,7 +148,7 @@ class BCStateTran : public IStateTransfer {
   std::unique_ptr<concord::util::Handoff> handoff_;
   IReplicaForStateTransfer* replicaForStateTransfer_ = nullptr;
 
-  char* buffer_;  // temporary buffer
+  std::unique_ptr<char[]> buffer_;  // temporary buffer
 
   // random generator
   std::random_device randomDevice_;
@@ -357,21 +357,80 @@ class BCStateTran : public IStateTransfer {
   ///////////////////////////////////////////////////////////////////////////
   // Asynchronous Operations - Blocks IO
   ///////////////////////////////////////////////////////////////////////////
-  struct GetBlockContext {
-    uint16_t index;
-    uint64_t blockId;
-    uint32_t blockSize;
-    std::unique_ptr<char[]> block;
+
+  struct BlockIOContext {
+    uint64_t blockId = 0;
+    uint32_t actualBlockSize = 0;
+    std::unique_ptr<char[]> blockData;
     std::future<bool> future;
   };
 
-  std::vector<GetBlockContext> srcGetBlockContextes_;
+  using BlockIOContextPtr = std::shared_ptr<BlockIOContext>;
+  class BlockIODataPool {
+   public:
+    BlockIODataPool(size_t maxNumElements, size_t elementSize, FetchingState& fetchingState)
+        : maxNumElements_(maxNumElements), fetchingState_(fetchingState) {
+      for (size_t i{0}; i < maxNumElements_; ++i) {
+        auto element = std::make_shared<BlockIOContext>();
+        element->blockData.reset(new char[elementSize]);
+        freeQ_.push_back(element);
+      }
+    }
+
+    size_t numFreeElements() const { return freeQ_.size(); }
+    size_t numAllocatedElements() const { return allocatedQ_.size(); }
+    bool empty() { return freeQ_.empty(); };
+    bool full() { return allocatedQ_.empty(); };
+    size_t maxElements() { return maxNumElements_; };
+
+    BlockIOContextPtr alloc() {
+      if (freeQ_.empty()) {
+        throw std::runtime_error("No more free elements!");
+      }
+      auto ret = freeQ_.front();
+      freeQ_.pop_front();
+      allocatedQ_.push_back(ret);
+      return ret;
+    }
+
+    void free(BlockIOContextPtr& element) {
+      if (freeQ_.size() == maxNumElements_) {
+        throw std::runtime_error("All elements have already returned!");
+      }
+      if (std::find(allocatedQ_.begin(), allocatedQ_.end(), element) == allocatedQ_.end()) {
+        throw std::runtime_error(
+            "Trying to free unrocognized element (address was not allocated by this pool object)!");
+      }
+      if (element->future.valid()) {
+        try {
+          LOG_DEBUG(getLogger(), "Waiting for previous thread to finish job on context " << KVLOG(element->blockId));
+          element->future.get();
+        } catch (...) {
+          // ignore and continue, this job is irrlevant
+          LOG_WARN(getLogger(), "Exception on irrelevant job, ignoring..");
+        }
+      }
+      auto ret = allocatedQ_.front();
+      allocatedQ_.pop_front();
+      freeQ_.push_back(std::move(element));
+    }
+
+   private:
+    inline logging::Logger& getLogger() const {
+      return (fetchingState_ == FetchingState::NotFetching) ? ST_SRC_LOG : ST_DST_LOG;
+    }
+    const size_t maxNumElements_;
+    std::deque<BlockIOContextPtr> freeQ_;
+    std::deque<BlockIOContextPtr> allocatedQ_;
+    FetchingState& fetchingState_;
+  };
+
+  BlockIODataPool ioPool_;
+  std::deque<BlockIOContextPtr> ioContexes_;
 
   // returns number of jobs pushed to queue
-  uint16_t asyncGetBlocksConcurrent(uint64_t nextBlockId,
-                                    uint64_t firstRequiredBlock,
-                                    uint16_t numBlocks,
-                                    size_t startContextIndex = 0);
+  uint16_t getBlocksConcurrentAsync(uint64_t nextBlockId, uint64_t firstRequiredBlock, uint16_t numBlocks);
+
   ///////////////////////////////////////////////////////////////////////////
   // Metrics
   ///////////////////////////////////////////////////////////////////////////
@@ -493,6 +552,8 @@ class BCStateTran : public IStateTransfer {
   bool sourceFlag_;
   uint8_t sourceSnapshotCounter_;
 
+  uint64_t sourceBatchCounter_ = 0;
+
   ///////////////////////////////////////////////////////////////////////////
   // Latency Historgrams
   ///////////////////////////////////////////////////////////////////////////
@@ -522,7 +583,7 @@ class BCStateTran : public IStateTransfer {
                                         src_get_block_size_bytes,
                                         src_send_batch_duration,
                                         src_send_batch_size_bytes,
-                                        src_send_batch_size_blocks});
+                                        src_send_batch_size_chunks});
     }
     //////////////////////////////////////////////////////////
     // Shared Recorders - match the above registered recorders
@@ -548,7 +609,7 @@ class BCStateTran : public IStateTransfer {
     DEFINE_SHARED_RECORDER(
         src_send_batch_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(src_send_batch_size_bytes, 1, MAX_BATCH_SIZE_BYTES, 3, concord::diagnostics::Unit::BYTES);
-    DEFINE_SHARED_RECORDER(src_send_batch_size_blocks, 1, MAX_BATCH_SIZE_BLOCKS, 3, concord::diagnostics::Unit::COUNT);
+    DEFINE_SHARED_RECORDER(src_send_batch_size_chunks, 1, MAX_BATCH_SIZE_BLOCKS, 3, concord::diagnostics::Unit::COUNT);
   };
   Recorders histograms_;
 
