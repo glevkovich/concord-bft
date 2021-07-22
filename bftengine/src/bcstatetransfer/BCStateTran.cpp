@@ -158,6 +158,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       sourceSelector_{allOtherReplicas(),
                       config_.fetchRetransmissionTimeoutMs,
                       config_.sourceReplicaReplacementTimeoutMs,
+                      config_.maxFetchRetransmissions,
                       ST_SRC_LOG},
       ioPool_(config_.maxNumberOfChunksInBatch, config_.maxBlockSize, lastFetchingState_),
       oneShotTimerFlag_(true),
@@ -1110,7 +1111,7 @@ void BCStateTran::sendFetchBlocksMsg(uint64_t firstRequiredBlock,
                   msg.lastRequiredBlock,
                   msg.lastKnownChunkInLastRequiredBlock));
 
-  sourceSelector_.setFetchingTimeStamp(getMonotonicTimeMilli());
+  sourceSelector_.setFetchingTimeStamp(getMonotonicTimeMilli(), true);
   dst_time_between_sendFetchBlocksMsg_rec_.clear();
   dst_time_between_sendFetchBlocksMsg_rec_.start();
   replicaForStateTransfer_->sendStateTransferMessage(
@@ -1142,7 +1143,7 @@ void BCStateTran::sendFetchResPagesMsg(int16_t lastKnownChunkInLastRequiredBlock
                   msg.requiredCheckpointNum,
                   msg.lastKnownChunk));
 
-  sourceSelector_.setFetchingTimeStamp(getMonotonicTimeMilli());
+  sourceSelector_.setFetchingTimeStamp(getMonotonicTimeMilli(), true);
   replicaForStateTransfer_->sendStateTransferMessage(
       reinterpret_cast<char *>(&msg), sizeof(FetchResPagesMsg), sourceSelector_.currentReplica());
 }
@@ -1857,7 +1858,7 @@ bool BCStateTran::onMessage(const ItemDataMsg *m, uint32_t msgLen, uint16_t repl
 
   tie(std::ignore, added) = pendingItemDataMsgs.insert(const_cast<ItemDataMsg *>(m));
   // set fetchingTimeStamp_ while ignoring added flag - source is responsive
-  sourceSelector_.setFetchingTimeStamp(getMonotonicTimeMilli());
+  sourceSelector_.setFetchingTimeStamp(getMonotonicTimeMilli(), false);
 
   if (added) {
     LOG_DEBUG(getLogger(),

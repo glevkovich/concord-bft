@@ -161,6 +161,7 @@ struct Config {
   uint32_t maxAcceptableMsgDelayMs = 0;
   uint32_t sourceReplicaReplacementTimeoutMs = 0;
   uint32_t fetchRetransmissionTimeoutMs = 0;
+  uint32_t maxFetchRetransmissions = 0;
   uint32_t metricsDumpIntervalSec = 0;
 
   // misc
@@ -189,6 +190,7 @@ inline std::ostream &operator<<(std::ostream &os, const Config &c) {
   os << ",";
   os << KVLOG(c.sourceReplicaReplacementTimeoutMs,
               c.fetchRetransmissionTimeoutMs,
+              c.maxFetchRetransmissions,
               c.metricsDumpIntervalSec,
               c.runInSeparateThread,
               c.enableReservedPages,

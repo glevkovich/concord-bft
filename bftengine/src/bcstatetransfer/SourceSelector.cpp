@@ -21,9 +21,11 @@ bool SourceSelector::hasSource() const { return currentReplica_ != NO_REPLICA &&
 
 void SourceSelector::setSourceSelectionTime(uint64_t currTimeMilli) { sourceSelectionTimeMilli_ = currTimeMilli; }
 
-void SourceSelector::setFetchingTimeStamp(uint64_t currTimeMilli) {
+void SourceSelector::setFetchingTimeStamp(uint64_t currTimeMilli, bool retransmissionOngoing) {
   fetchingTimeStamp_ = currTimeMilli;
-  LOG_TRACE(logger_, KVLOG(fetchingTimeStamp_));
+  fetchRetransmissionOngoing_ = retransmissionOngoing;
+  if (!retransmissionOngoing) fetchRetransmissionCounter_ = 0;
+  LOG_TRACE(logger_, KVLOG(fetchingTimeStamp_, fetchRetransmissionOngoing_, fetchRetransmissionCounter_));
 }
 
 void SourceSelector::removeCurrentReplica() {
@@ -38,11 +40,12 @@ void SourceSelector::reset() {
   currentReplica_ = NO_REPLICA;
   sourceSelectionTimeMilli_ = 0;
   fetchingTimeStamp_ = 0;
+  fetchRetransmissionCounter_ = 0;
 }
 
 bool SourceSelector::isReset() const {
-  return preferredReplicas_.empty() && currentReplica_ == NO_REPLICA && sourceSelectionTimeMilli_ == 0 &&
-         fetchingTimeStamp_ == 0;
+  return preferredReplicas_.empty() && (currentReplica_ == NO_REPLICA) && (sourceSelectionTimeMilli_ == 0) &&
+         (fetchingTimeStamp_ == 0) && (fetchRetransmissionCounter_ == 0);
 }
 
 bool SourceSelector::retransmissionTimeoutExpired(uint64_t currTimeMilli) const {
@@ -85,13 +88,36 @@ std::string SourceSelector::preferredReplicasToString() const {
 }
 
 bool SourceSelector::shouldReplaceSource(uint64_t currTimeMilli, bool badDataFromCurrentSource) const {
-  auto dt = timeSinceSourceSelectedMilli(currTimeMilli);
-  bool shouldReplaceSource = (currentReplica_ == NO_REPLICA) || badDataFromCurrentSource ||
-                             ((sourceReplacementTimeoutMilli_ > 0) && (dt > sourceReplacementTimeoutMilli_));
-  if (shouldReplaceSource) {
-    LOG_INFO(logger_, KVLOG(currentReplica_, badDataFromCurrentSource, dt, sourceReplacementTimeoutMilli_));
+  if (currentReplica_ == NO_REPLICA) {
+    LOG_INFO(logger_, "Should replace source: no source");
+    return true;
+  } else if (badDataFromCurrentSource) {
+    LOG_INFO(logger_, "Should replace source: bad data from" << KVLOG(currentReplica_));
+    return true;
+  } else if (retransmissionTimeoutExpired(currTimeMilli)) {
+    if (fetchRetransmissionOngoing_) {
+      ++fetchRetransmissionCounter_;
+      fetchRetransmissionOngoing_ = false;
+      LOG_WARN(logger_,
+               "Retransmission timeout expired:" << KVLOG(
+                   currTimeMilli, fetchingTimeStamp_, retransmissionTimeoutMilli_, fetchRetransmissionCounter_));
+    }
+    if (fetchRetransmissionCounter_ > maxFetchRetransmissions_) {
+      LOG_INFO(logger_,
+               "Should replace source: retransmission timeoute expired: " << KVLOG(
+                   currTimeMilli, fetchingTimeStamp_, retransmissionTimeoutMilli_));
+      return true;
+    }
+  } else {
+    auto dt = timeSinceSourceSelectedMilli(currTimeMilli);
+    if ((sourceReplacementTimeoutMilli_ > 0) && (dt > sourceReplacementTimeoutMilli_)) {
+      LOG_INFO(logger_,
+               "Should replace source: source replacement timeout:" << KVLOG(
+                   currentReplica_, badDataFromCurrentSource, dt, sourceReplacementTimeoutMilli_));
+      return true;
+    }
   }
-  return shouldReplaceSource;
+  return false;
 }
 
 void SourceSelector::selectSource(uint64_t currTimeMilli) {
